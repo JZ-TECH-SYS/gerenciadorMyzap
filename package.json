@@ -1,0 +1,62 @@
+{
+  "name": "gerenciador-myzap",
+  "description": "Gerenciador MyZap — disparo automático de mensagens via WhatsApp",
+  "version": "1.0.0",
+  "main": "main.js",
+  "author": "JZ-TECH-SYS",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "nodemon --exec electron .",
+    "pack": "electron-builder --dir",
+    "build": "electron-builder",
+    "dist": "electron-builder",
+    "dist:win32": "electron-builder --win --ia32 --config.directories.output=dist/win32",
+    "dist:win64": "electron-builder --win --x64 --config.directories.output=dist/win64",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.3",
+    "electron-store": "^4.0.0",
+    "electron-updater": "^6.6.2",
+    "fix-path": "^2.1.0"
+  },
+  "devDependencies": {
+    "electron": "*",
+    "electron-builder": "^24.11.0",
+    "eslint": "^8.57.1",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.32.0",
+    "nodemon": "^3.1.10"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron"]
+  },
+  "build": {
+    "appId": "com.jvtech.myzap",
+    "productName": "gerenciador-myzap",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.png",
+      "artifactName": "gerenciador-myzap-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Gerenciador MyZap"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JZ-TECH-SYS",
+        "repo": "gerenciadorMyzap"
+      }
+    ]
+  }
+}

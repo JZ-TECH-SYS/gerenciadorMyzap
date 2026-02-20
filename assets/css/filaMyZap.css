@@ -1,0 +1,57 @@
+body {
+    background: radial-gradient(1200px 600px at top, #020617, #01030d);
+    color: #e5e7eb;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+}
+
+.card {
+    background-color: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+}
+
+.fila-card {
+    background-color: #020617;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 18px;
+}
+
+.status-badge {
+    font-size: 0.75rem;
+    padding: 6px 10px;
+    border-radius: 999px;
+}
+
+.text-muted-small {
+    font-size: 0.85rem;
+    color: #94a3b8;
+    line-height: 1.4;
+}
+
+.btn { border-radius: 8px; font-weight: 600; }
+
+.btn-success { background: linear-gradient(135deg, #10b981, #059669); border: none; }
+.btn-success:hover { filter: brightness(1.05); }
+.btn-success:disabled { opacity: 0.5; }
+
+.btn-outline-danger { border-color: #ef4444; color: #ef4444; }
+.btn-outline-danger:hover { background-color: rgba(239, 68, 68, 0.1); }
+.btn-outline-danger:disabled { opacity: 0.5; }
+
+.btn-outline-secondary { border-color: #334155; color: #cbd5e1; }
+.btn-outline-secondary:hover { background-color: #1e293b; }
+
+.queue-table th,
+.queue-table td { border-color: #334155 !important; }
+
+.queue-message-cell {
+    max-width: 460px;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.queue-error-alert {
+    font-size: 0.9rem;
+    border-radius: 10px;
+}

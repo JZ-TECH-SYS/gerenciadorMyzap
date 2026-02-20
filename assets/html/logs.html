@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Logs — Gerenciador MyZap</title>
+    <link rel="stylesheet" href="../css/logs.css" />
+  </head>
+  <body>
+    <header>
+      <label for="logFile">📄 Selecionar log</label>
+      <select id="logFile"></select>
+      <div class="filters">
+        <label><input type="checkbox" value="error" checked /> Erro</label>
+        <label><input type="checkbox" value="warn" checked /> Aviso</label>
+        <label><input type="checkbox" value="info" checked /> Info</label>
+        <label><input type="checkbox" value="debug" checked /> Debug</label>
+      </div>
+      <input id="search" type="search" placeholder="Filtrar mensagem ou área" />
+    </header>
+
+    <div id="logContent" class="log-panel">Carregando...</div>
+    <div id="logMeta"></div>
+
+    <script src="../js/logs.js"></script>
+  </body>
+</html>

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Painel MyZap</title>
+    <link rel="stylesheet" href="../css/bootstrap5.0.2.min.css" />
+    <link rel="stylesheet" href="../css/painelMyZap.css" />
+</head>
+
+<body>
+    <div class="container py-4">
+        <div class="card shadow-sm">
+            <div class="card-header">
+                <h5 class="mb-0">📊 Painel MyZap</h5>
+            </div>
+
+            <div class="card-body">
+
+                <!-- TABS -->
+                <ul class="nav nav-tabs mb-3" id="myzapTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="myzap-tab"
+                            data-bs-toggle="tab" data-bs-target="#myzap" type="button" role="tab">
+                            💬 MyZap
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="status-tab"
+                            data-bs-toggle="tab" data-bs-target="#status" type="button" role="tab">
+                            📡 Status
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="config-tab"
+                            data-bs-toggle="tab" data-bs-target="#config" type="button" role="tab">
+                            ⚙ Configurações
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+
+                    <!-- ABA MYZAP -->
+                    <div class="tab-pane fade show active" id="myzap" role="tabpanel">
+
+                        <div id="myzap-loading" class="myzap-loading-overlay d-none">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Carregando...</span>
+                            </div>
+                            <p class="mt-2">Carregando...</p>
+                        </div>
+
+                        <div class="myzap-grid">
+
+                            <!-- FORMULÁRIO -->
+                            <div class="myzap-form">
+                                <h6 class="mb-3 fw-semibold">Conectar com WhatsApp</h6>
+                                <p class="text-muted-small">
+                                    Aqui você pode iniciar uma nova conexão com o WhatsApp.
+                                </p>
+
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Session Name *</label>
+                                        <input type="text" id="myzap-sessionname"
+                                            class="form-control myzap-readonly" readonly
+                                            placeholder="Name of the session">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Session Key *</label>
+                                        <input type="text" id="myzap-sessionkey"
+                                            class="form-control myzap-readonly" readonly
+                                            placeholder="Key of the session">
+                                    </div>
+                                </div>
+
+                                <div class="alert alert-info myzap-info mt-4">
+                                    Aguardando informações para gerar o QR Code ou iniciar a sessão.
+                                </div>
+
+                                <div id="ia-config-box" class="ia-config-box d-none mt-3">
+                                    <label class="form-label" for="myzap-mensagem-padrao">
+                                        Mensagem padrão do MyZap
+                                    </label>
+                                    <textarea id="myzap-mensagem-padrao" class="form-control" rows="4"
+                                        placeholder="Digite a mensagem padrão para respostas da IA"></textarea>
+                                    <div class="d-flex justify-content-end mt-2">
+                                        <button class="btn btn-primary" type="button"
+                                            id="btn-save-ia-config" onclick="salvarMensagemPadrao()">
+                                            Salvar mensagem padrão
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <button class="btn btn-success mt-2" type="button"
+                                    id="btn-start-session" disabled onclick="iniciarSessao()">
+                                    Iniciar instância
+                                </button>
+                                <button class="btn btn-danger mt-2" type="button"
+                                    id="btn-delete-session" disabled onclick="deletarSessao()">
+                                    Encerrar instância
+                                </button>
+                            </div>
+
+                            <!-- LATERAL: STATUS + QR CODE -->
+                            <div class="myzap-side">
+                                <div class="myzap-status-card">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <strong>Situação</strong>
+                                        <button class="btn btn-sm btn-outline-secondary"
+                                            title="Atualizar status" onclick="checkConnection()">
+                                            🔄
+                                        </button>
+                                    </div>
+                                    <div class="status-indicator waiting">
+                                        Verificando...
+                                    </div>
+                                </div>
+
+                                <div class="myzap-qrcode-card">
+                                    <strong class="mb-2 d-block">QR Code</strong>
+                                    <div id="qrcode-box" class="qrcode-box">
+                                        <span class="text-muted-small">QR Code aparecerá aqui</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ABA STATUS -->
+                    <div class="tab-pane fade" id="status" role="tabpanel">
+
+                        <div class="list-group list-group-flush">
+                            <div class="list-group-item bg-transparent border-bottom border-secondary-subtle">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <strong class="title-status">API MyZap</strong>
+                                        <div class="text-muted-small">Verifica se a API está rodando e acessível</div>
+                                    </div>
+                                    <span id="status-api" class="badge bg-secondary status-badge">Não verificado</span>
+                                </div>
+                            </div>
+
+                            <div class="list-group-item bg-transparent border-bottom border-secondary-subtle">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <strong class="title-status">Instalação</strong>
+                                        <div class="text-muted-small">Verifica se o MyZap está instalado no diretório configurado</div>
+                                    </div>
+                                    <span id="status-installation" class="badge bg-secondary status-badge">Não verificado</span>
+                                </div>
+                            </div>
+
+                            <div class="list-group-item bg-transparent">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <strong class="title-status">Configurações</strong>
+                                        <div class="text-muted-small">Valida se SessionKey e diretório estão preenchidos</div>
+                                    </div>
+                                    <span id="status-config" class="badge bg-secondary status-badge">Incompleto</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mt-4 d-flex gap-2">
+                            <button id="btn-start" class="btn btn-success">
+                                Iniciar MyZap
+                            </button>
+
+                            <div class="btn-group" id="install-group">
+                                <button id="btn-install" type="button" class="btn btn-primary"
+                                    onclick="installMyZap()">
+                                    Instalar
+                                </button>
+                                <button id="btn-install-dropdown" type="button"
+                                    class="btn btn-primary dropdown-toggle dropdown-toggle-split d-none"
+                                    data-bs-toggle="dropdown" aria-expanded="false">
+                                    <span class="visually-hidden">Toggle Dropdown</span>
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <li>
+                                        <button id="btn-reinstall" class="dropdown-item"
+                                            onclick="reinstallMyZap()">
+                                            Reinstalar
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
+
+                            <button id="btn-refresh-status" class="btn btn-outline-light"
+                                onclick="atualizaStatus()">
+                                Atualizar Status
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- ABA CONFIGURAÇÕES -->
+                    <div class="tab-pane fade" id="config" role="tabpanel">
+
+                        <form id="myzap-config-form">
+
+                            <div class="mb-3">
+                                <label class="form-label">Diretório do MyZap</label>
+                                <input type="text" class="form-control" id="input-path"
+                                    placeholder="C:/JzTech/projects/myzap" />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Session Key</label>
+                                <input type="text" class="form-control" id="input-sessionkey"
+                                    placeholder="Informe a SessionKey do MyZap" />
+                            </div>
+
+                            <div class="mb-4">
+                                <label class="form-label">API Token</label>
+                                <input type="text" class="form-control" id="input-apitoken"
+                                    placeholder="Token de autenticação, se aplicável" />
+                            </div>
+
+                            <div class="mb-4">
+                                <label class="form-label">Conteúdo do .env</label>
+                                <textarea class="form-control" id="input-env" rows="6"
+                                    placeholder="Cole o conteúdo do arquivo .env aqui"></textarea>
+                            </div>
+
+                            <div class="mb-4">
+                                <h6 class="mb-3 fw-semibold">ClickExpress</h6>
+                                <div class="mb-3">
+                                    <label class="form-label">URL API ClickExpress</label>
+                                    <input type="text" class="form-control" id="input-clickexpress-apiurl"
+                                        placeholder="https://sua-api-clickexpress.com/" />
+                                </div>
+                                <div>
+                                    <label class="form-label">Token ClickExpress (Fila)</label>
+                                    <input type="text" class="form-control" id="input-clickexpress-token"
+                                        placeholder="Bearer fixo para consultar/atualizar fila" />
+                                </div>
+                            </div>
+
+                            <div class="d-flex gap-2">
+                                <button type="submit" id="btn-save-config" class="btn btn-success">
+                                    Salvar Configurações
+                                </button>
+                            </div>
+
+                        </form>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="../js/bootstrap5.0.2.js"></script>
+    <script src="../js/painelMyZap.js"></script>
+</body>
+
+</html>
