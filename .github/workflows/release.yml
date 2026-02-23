@@ -46,8 +46,47 @@ jobs:
             dist/*.exe
             dist/latest.yml
 
+  build-linux:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Linux (electron-builder)
+        run: pnpm run dist:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest-linux.yml
+            dist/*.blockmap
+
   release:
-    needs: [build-windows]
+    needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -70,6 +109,12 @@ jobs:
           name: windows-artifacts
           path: dist/
 
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-artifacts
+          path: dist/
+
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
@@ -79,5 +124,9 @@ jobs:
           files: |
             dist/*.exe
             dist/latest.yml
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest-linux.yml
+            dist/*.blockmap
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -20,6 +20,7 @@
     "dist:win32": "electron-builder --win --ia32 --config.directories.output=dist/win32",
     "predist:win64": "pnpm run build:icons",
     "dist:win64": "electron-builder --win --x64 --config.directories.output=dist/win64",
+    "dist:linux": "electron-builder --linux AppImage deb",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -49,6 +50,12 @@
       "target": ["nsis"],
       "icon": "assets/icon.ico",
       "artifactName": "gerenciador-myzap-Setup-${version}.${ext}"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "assets/icon.png",
+      "artifactName": "gerenciador-myzap-${version}.${ext}",
+      "category": "Utility"
     },
     "nsis": {
       "oneClick": false,
