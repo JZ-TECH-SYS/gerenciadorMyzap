@@ -31,7 +31,7 @@ Aplicação desktop **Electron** para gerenciamento do serviço **MyZap** — in
 ## Instalação
 
 ```bash
-npm install
+pnpm install
 ```
 
 ---
@@ -39,7 +39,7 @@ npm install
 ## Executar em desenvolvimento
 
 ```bash
-npm start
+pnpm start
 ```
 
 ---
@@ -47,7 +47,7 @@ npm start
 ## Gerar instalador
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 O instalador é gerado na pasta `dist/`.

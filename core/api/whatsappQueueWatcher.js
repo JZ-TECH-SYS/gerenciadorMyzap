@@ -1,17 +1,23 @@
 const Store = require('electron-store');
-const { info, warn, error } = require('../utils/logger');
+const { info, warn, error, debug } = require('../myzap/myzapLogger');
 
 const store = new Store();
 const MYZAP_API_URL = 'http://localhost:5555/';
-const LOOP_INTERVAL_MS = 30000;
+const LOOP_INTERVAL_MS = 3000;
+const FETCH_TIMEOUT_MS = 15000;
+const PROCESSANDO_TIMEOUT_MS = 120000;
 
 let ativo = false;
 let processando = false;
+let processandoDesde = 0;
 let timer = null;
 let ultimaExecucaoEm = null;
 let ultimoErro = null;
 let ultimoLote = 0;
 let ultimosPendentes = [];
+let consecutiveSkips = 0;
+const MAX_CONSECUTIVE_SKIPS = 10;
+const SKIP_LOG_EVERY = 5;
 
 function normalizeBaseUrl(url) {
   if (!url || typeof url !== 'string') return '';
@@ -20,7 +26,12 @@ function normalizeBaseUrl(url) {
 
 async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
   try {
-    console.log('[FilaMyZap] Validando disponibilidade do MyZap (/verifyRealStatus)...', { sessionKey });
+    debug('[FilaMyZap] Validando disponibilidade do MyZap (/verifyRealStatus)...', {
+      metadata: { sessionKey }
+    });
+
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
     const res = await fetch(`${MYZAP_API_URL}verifyRealStatus`, {
       method: 'POST',
@@ -29,38 +40,49 @@ async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
         apitoken: sessionToken,
         sessionkey: sessionKey
       },
-      body: JSON.stringify({ session: sessionKey })
+      body: JSON.stringify({ session: sessionKey }),
+      signal: ctrl.signal
     });
 
+    clearTimeout(timeout);
+
     const data = await res.json().catch(() => ({}));
-    console.log('[FilaMyZap] Retorno verifyRealStatus:', { status: res.status, data });
+    debug('[FilaMyZap] Retorno verifyRealStatus', { metadata: { status: res.status, data } });
     return res.ok;
   } catch (err) {
-    console.log('[FilaMyZap] Erro ao validar disponibilidade do MyZap:', err?.message || err);
+    warn('[FilaMyZap] Erro ao validar disponibilidade do MyZap', {
+      metadata: { error: err?.message || err }
+    });
     return false;
   }
 }
 
-async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionToken) {
+async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName) {
   const query = new URLSearchParams({
     sessionKey: sessionKey || '',
-    sessionToken: sessionToken || ''
+    sessionToken: sessionName || ''
   }).toString();
 
-  console.log('[FilaMyZap] Buscando pendentes...', { apiBaseUrl, sessionKey });
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
+  debug('[FilaMyZap] Buscando pendentes', { metadata: { apiBaseUrl, sessionKey, sessionName, query } });
   const res = await fetch(`${apiBaseUrl}parametrizacao-myzap/pendentes?${query}`, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${token}` }
+    headers: { Authorization: `Bearer ${token}` },
+    signal: ctrl.signal
   });
+
+  clearTimeout(timeout);
 
   const data = await res.json().catch(() => ({}));
-  console.log('[FilaMyZap] Retorno /parametrizacao-myzap/pendentes:', {
-    status: res.status,
-    total: data?.result?.total,
-    error: data?.error
+  debug('[FilaMyZap] Retorno /parametrizacao-myzap/pendentes', {
+    metadata: {
+      status: res.status,
+      total: data?.result?.total,
+      error: data?.error
+    }
   });
-
   if (!res.ok || data?.error) {
     throw new Error(data?.error || 'Falha ao consultar pendentes');
   }
@@ -69,19 +91,26 @@ async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionToken) {
 }
 
 async function atualizarStatusFila(apiBaseUrl, token, payload) {
-  console.log('[FilaMyZap] Atualizando status da fila...', payload);
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
+  debug('[FilaMyZap] Atualizando status da fila', { metadata: payload });
   const res = await fetch(`${apiBaseUrl}parametrizacao-myzap/fila/status`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal: ctrl.signal
   });
 
+  clearTimeout(timeout);
+
   const data = await res.json().catch(() => ({}));
-  console.log('[FilaMyZap] Retorno /parametrizacao-myzap/fila/status:', { status: res.status, data });
+  debug('[FilaMyZap] Retorno /parametrizacao-myzap/fila/status', {
+    metadata: { status: res.status, data }
+  });
   return res.ok && !data?.error;
 }
 
@@ -94,7 +123,7 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackApiToken) {
   try {
     payloadFila = mensagem?.json ? JSON.parse(mensagem.json) : {};
   } catch (e) {
-    return { ok: false, erro: `JSON inválido da fila: ${e.message}` };
+    return { ok: false, erro: `JSON invalido da fila: ${e.message}` };
   }
 
   const endpoint = payloadFila?.endpoint;
@@ -112,11 +141,16 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackApiToken) {
     return { ok: false, erro: 'SessionKey ou APIToken do MyZap ausente' };
   }
 
-  console.log('[FilaMyZap] Enviando para MyZap...', {
-    idfila: mensagem?.idfila,
-    endpoint: endpointNormalizado,
-    sessionKey
+  debug('[FilaMyZap] Enviando para MyZap', {
+    metadata: {
+      idfila: mensagem?.idfila,
+      endpoint: endpointNormalizado,
+      sessionKey
+    }
   });
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
   const res = await fetch(`${MYZAP_API_URL}${endpointNormalizado}`, {
     method: 'POST',
@@ -125,12 +159,20 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackApiToken) {
       apitoken: apiToken,
       sessionkey: sessionKey
     },
-    body: JSON.stringify(data)
+    body: JSON.stringify(data),
+    signal: ctrl.signal
   });
 
-  const body = await res.json().catch(() => ({}));
-  console.log('[FilaMyZap] Retorno MyZap:', { idfila: mensagem?.idfila, status: res.status, body });
+  clearTimeout(timeout);
 
+  const body = await res.json().catch(() => ({}));
+  debug('[FilaMyZap] Retorno MyZap', {
+    metadata: {
+      idfila: mensagem?.idfila,
+      status: res.status,
+      body
+    }
+  });
   if (!res.ok || body?.error) {
     return { ok: false, erro: body?.error || `HTTP ${res.status}` };
   }
@@ -146,25 +188,96 @@ async function obterCredenciaisAtivas() {
   const clickApiUrl = normalizeBaseUrl(String(store.get('clickexpress_apiUrl') || '').trim());
   const clickToken = String(store.get('clickexpress_queueToken') || '').trim();
   const sessionKey = String(store.get('myzap_sessionKey') || '').trim();
-  const sessionToken = String(store.get('myzap_apiToken') || '').trim();
-  return { clickApiUrl, clickToken, sessionKey, sessionToken };
+  const sessionName = String(store.get('myzap_sessionName') || sessionKey).trim();
+  const myzapApiToken = String(store.get('myzap_apiToken') || '').trim();
+
+  return {
+    clickApiUrl,
+    clickToken,
+    sessionKey,
+    sessionName,
+    myzapApiToken
+  };
 }
 
 async function listarPendentesMyZap() {
-  const { clickApiUrl, clickToken, sessionKey, sessionToken } = await obterCredenciaisAtivas();
+  const config = await obterCredenciaisAtivas();
+  const {
+    clickApiUrl,
+    clickToken,
+    sessionKey,
+    sessionName
+  } = config;
 
-  if (!clickApiUrl || !clickToken || !sessionKey || !sessionToken) {
+  if (!clickApiUrl || !clickToken || !sessionKey || !sessionName) {
     return [];
   }
 
-  return buscarPendentes(clickApiUrl, clickToken, sessionKey, sessionToken);
+  return buscarPendentes(clickApiUrl, clickToken, sessionKey, sessionName);
 }
 
 async function processarFilaUmaRodada() {
-  if (!ativo || processando) return;
+  if (!ativo) return;
+
+  // Protecao contra processamento travado (timeout de seguranca)
+  if (processando) {
+    const elapsed = Date.now() - processandoDesde;
+    if (elapsed > PROCESSANDO_TIMEOUT_MS) {
+      warn('[FilaMyZap] Processamento anterior travado, resetando flag processando', {
+        metadata: { area: 'whatsappQueueWatcher', elapsedMs: elapsed }
+      });
+      processando = false;
+    } else {
+      return;
+    }
+  }
+
   processando = true;
+  processandoDesde = Date.now();
+
+  info('[FilaMyZap] Iniciando ciclo de processamento da fila', {
+    metadata: { area: 'whatsappQueueWatcher' }
+  });
 
   try {
+    // Validar MyZap disponivel antes de buscar pendentes
+    const configAtual = await obterCredenciaisAtivas();
+    if (!configAtual.sessionKey || !configAtual.myzapApiToken) {
+      consecutiveSkips++;
+      if (consecutiveSkips % SKIP_LOG_EVERY === 1) {
+        warn(`[FilaMyZap] Credenciais ausentes (skip #${consecutiveSkips})`, {
+          metadata: { consecutiveSkips }
+        });
+      }
+      if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
+        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos`, {
+          metadata: { area: 'whatsappQueueWatcher' }
+        });
+        stopWhatsappQueueWatcher();
+      }
+      return;
+    }
+
+    const myzapOk = await validarDisponibilidadeMyZap(configAtual.sessionKey, configAtual.myzapApiToken);
+    if (!myzapOk) {
+      consecutiveSkips++;
+      if (consecutiveSkips % SKIP_LOG_EVERY === 1) {
+        warn(`[FilaMyZap] MyZap indisponivel (skip #${consecutiveSkips})`, {
+          metadata: { consecutiveSkips }
+        });
+      }
+      if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
+        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos (MyZap down)`, {
+          metadata: { area: 'whatsappQueueWatcher' }
+        });
+        stopWhatsappQueueWatcher();
+      }
+      return;
+    }
+
+    // MyZap ok, reset skip counter
+    consecutiveSkips = 0;
+
     const pendentes = await listarPendentesMyZap();
     ultimosPendentes = Array.isArray(pendentes) ? pendentes : [];
     const lote = pendentes.filter((m) => String(m?.status || '').toLowerCase() !== 'enviado');
@@ -172,24 +285,41 @@ async function processarFilaUmaRodada() {
     ultimoLote = lote.length;
     ultimaExecucaoEm = new Date().toISOString();
 
-    if (lote.length > 0) {
-      info('Processando lote da fila MyZap', {
-        metadata: { totalPendentes: pendentes.length, tamanhoLote: lote.length }
+    info('[FilaMyZap] Busca de pendentes concluida', {
+      metadata: { totalPendentes: pendentes.length, tamanhoLote: lote.length }
+    });
+
+    if (lote.length === 0) {
+      info('[FilaMyZap] Nenhuma mensagem pendente para envio neste ciclo', {
+        metadata: { area: 'whatsappQueueWatcher' }
       });
     }
 
-    const { clickApiUrl, clickToken, sessionKey, sessionToken } = await obterCredenciaisAtivas();
+    const {
+      clickApiUrl,
+      clickToken,
+      sessionKey,
+      myzapApiToken
+    } = await obterCredenciaisAtivas();
 
     for (const mensagem of lote) {
       if (!ativo) break;
 
       let novoStatus = 'erro';
       try {
-        const envio = await enviarParaMyZap(mensagem, sessionKey, sessionToken);
+        info('[FilaMyZap] Enviando mensagem', {
+          metadata: { idfila: mensagem?.idfila, idempresa: mensagem?.idempresa }
+        });
+
+        const envio = await enviarParaMyZap(mensagem, sessionKey, myzapApiToken);
         novoStatus = envio.ok ? 'enviado' : 'erro';
 
-        if (!envio.ok) {
-          warn('Falha ao enviar mensagem para MyZap', {
+        if (envio.ok) {
+          info('[FilaMyZap] Mensagem enviada com sucesso', {
+            metadata: { idfila: mensagem?.idfila, idempresa: mensagem?.idempresa }
+          });
+        } else {
+          warn('[FilaMyZap] Falha ao enviar mensagem para MyZap', {
             metadata: {
               idfila: mensagem?.idfila,
               idempresa: mensagem?.idempresa,
@@ -214,7 +344,7 @@ async function processarFilaUmaRodada() {
       });
 
       if (!statusOk) {
-        warn('Não foi possível atualizar status da fila MyZap', {
+        warn('Nao foi possivel atualizar status da fila MyZap', {
           metadata: {
             idfila: mensagem?.idfila,
             idempresa: mensagem?.idempresa,
@@ -223,6 +353,10 @@ async function processarFilaUmaRodada() {
         });
       }
     }
+
+    info('[FilaMyZap] Ciclo de processamento concluido', {
+      metadata: { area: 'whatsappQueueWatcher', loteProcessado: lote.length }
+    });
 
     ultimoErro = null;
   } catch (e) {
@@ -237,20 +371,28 @@ async function processarFilaUmaRodada() {
 
 async function startWhatsappQueueWatcher() {
   if (ativo) {
-    return { status: 'success', message: 'Watcher da fila MyZap já está em execução.' };
+    return { status: 'success', message: 'Watcher da fila MyZap ja esta em execucao.' };
   }
 
   const config = await obterCredenciaisAtivas();
-  if (!config.clickApiUrl || !config.clickToken || !config.sessionKey || !config.sessionToken) {
-    console.log('[FilaMyZap] Configuração incompleta para iniciar watcher.', config);
-    return { status: 'error', message: 'Configuração do ClickExpress/MyZap incompleta.' };
+  if (!config.clickApiUrl || !config.clickToken || !config.sessionKey || !config.myzapApiToken) {
+    warn('[FilaMyZap] Configuracao incompleta para iniciar watcher', {
+      metadata: {
+        clickApiUrl: !!config.clickApiUrl,
+        clickToken: !!config.clickToken,
+        sessionKey: !!config.sessionKey,
+        sessionName: !!config.sessionName,
+        myzapApiToken: !!config.myzapApiToken
+      }
+    });
+    return { status: 'error', message: 'Configuracao do ClickExpress/MyZap incompleta.' };
   }
 
-  const myzapDisponivel = await validarDisponibilidadeMyZap(config.sessionKey, config.sessionToken);
+  const myzapDisponivel = await validarDisponibilidadeMyZap(config.sessionKey, config.myzapApiToken);
   if (!myzapDisponivel) {
     return {
       status: 'error',
-      message: 'MyZap indisponível. Verifique se a sessão está ativa antes de iniciar a fila.'
+      message: 'MyZap indisponivel. Verifique se a sessao esta ativa antes de iniciar a fila.'
     };
   }
 
@@ -262,7 +404,7 @@ async function startWhatsappQueueWatcher() {
   });
 
   timer = setInterval(() => {
-    console.log('[FilaMyZap] Tick de processamento da fila.');
+    debug('[FilaMyZap] Tick de processamento da fila');
     processarFilaUmaRodada().catch((err) => {
       error('Erro inesperado no loop da fila MyZap', {
         metadata: { area: 'whatsappQueueWatcher', error: err }
@@ -276,7 +418,7 @@ async function startWhatsappQueueWatcher() {
 
 function stopWhatsappQueueWatcher() {
   if (!ativo && !timer) {
-    return { status: 'success', message: 'Watcher da fila MyZap já estava parado.' };
+    return { status: 'success', message: 'Watcher da fila MyZap ja estava parado.' };
   }
 
   if (timer) {
@@ -287,7 +429,9 @@ function stopWhatsappQueueWatcher() {
   ativo = false;
   processando = false;
 
-  info('Watcher da fila MyZap parado', { metadata: { area: 'whatsappQueueWatcher' } });
+  info('Watcher da fila MyZap parado', {
+    metadata: { area: 'whatsappQueueWatcher' }
+  });
 
   return { status: 'success', message: 'Watcher da fila MyZap parado com sucesso.' };
 }
@@ -317,5 +461,6 @@ module.exports = {
   getUltimosPendentesMyZap,
   startWhatsappQueueWatcher,
   stopWhatsappQueueWatcher,
-  getWhatsappQueueWatcherStatus
+  getWhatsappQueueWatcherStatus,
+  processarFilaUmaRodada
 };

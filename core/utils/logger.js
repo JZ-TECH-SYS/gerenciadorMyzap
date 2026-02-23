@@ -7,7 +7,8 @@ const MAX_FILE_BYTES = 3 * 1024 * 1024; // 3 MB por arquivo antes de rotacionar
 const LOG_DIR = path.join(os.tmpdir(), 'gerenciador-myzap', 'logs');
 const WRITE_PLAIN_LOG = false;
 const LOG_CHANNELS = {
-  system: 'log-sistema'
+  system: 'log-sistema',
+  myzap: 'log-myzap'
 };
 
 const LEVEL_LABEL = {

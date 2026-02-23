@@ -17,33 +17,57 @@
 
             <div class="card-body">
 
+                <!-- FEEDBACK DO RESET (TOPO - fora das tabs) -->
+                <div id="reset-feedback-box" class="d-none mb-3">
+                    <div id="reset-feedback-alert" class="alert" role="alert">
+                        <div class="d-flex align-items-center gap-2 mb-2">
+                            <span id="reset-feedback-icon"></span>
+                            <strong id="reset-feedback-title">Processando...</strong>
+                        </div>
+                        <div id="reset-feedback-message"></div>
+                        <div id="reset-feedback-details" class="mt-2 small text-muted d-none"></div>
+                    </div>
+                    <button id="btn-install-again" class="btn btn-primary btn-lg w-100 d-none" onclick="instalarNovamente()">
+                        🔄 Instalar Novamente
+                    </button>
+                </div>
+
+                <!-- ===================== -->
                 <!-- TABS -->
+                <!-- ===================== -->
                 <ul class="nav nav-tabs mb-3" id="myzapTabs" role="tablist">
+
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="myzap-tab"
-                            data-bs-toggle="tab" data-bs-target="#myzap" type="button" role="tab">
+                        <button class="nav-link active" id="myzap-tab" data-bs-toggle="tab" data-bs-target="#myzap"
+                            type="button" role="tab">
                             💬 MyZap
                         </button>
                     </li>
+
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="status-tab"
-                            data-bs-toggle="tab" data-bs-target="#status" type="button" role="tab">
+                        <button class="nav-link" id="status-tab" data-bs-toggle="tab" data-bs-target="#status"
+                            type="button" role="tab">
                             📡 Status
                         </button>
                     </li>
+
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="config-tab"
-                            data-bs-toggle="tab" data-bs-target="#config" type="button" role="tab">
+                        <button class="nav-link" id="config-tab" data-bs-toggle="tab" data-bs-target="#config"
+                            type="button" role="tab">
                             ⚙ Configurações
                         </button>
                     </li>
+
                 </ul>
 
                 <div class="tab-content">
 
+                    <!-- ===================== -->
                     <!-- ABA MYZAP -->
+                    <!-- ===================== -->
                     <div class="tab-pane fade show active" id="myzap" role="tabpanel">
-
+                        
+                        <!-- LOADING OVERLAY -->
                         <div id="myzap-loading" class="myzap-loading-overlay d-none">
                             <div class="spinner-border text-primary" role="status">
                                 <span class="visually-hidden">Carregando...</span>
@@ -51,94 +75,123 @@
                             <p class="mt-2">Carregando...</p>
                         </div>
 
-                        <div class="myzap-grid">
+                        <div id="myzap-online-only" class="alert alert-warning d-none mb-3"></div>
+
+                        <div id="myzap-progress-box" class="alert alert-info d-none mb-3" role="status" aria-live="polite">
+                            <div class="d-flex justify-content-between align-items-center gap-2">
+                                <strong id="myzap-progress-title">Processo local do MyZap</strong>
+                                <span id="myzap-progress-phase" class="badge bg-primary">aguardando</span>
+                            </div>
+                            <div id="myzap-progress-message" class="mt-2">Aguardando execucao...</div>
+                            <div class="progress mt-2 myzap-progress-track">
+                                <div id="myzap-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">
+                                    0%
+                                </div>
+                            </div>
+                            <div id="myzap-progress-updated" class="text-muted-small mt-2">Sem atualizacao recente.</div>
+                        </div>
+
+                        <div id="myzap-local-content" class="myzap-grid">
 
                             <!-- FORMULÁRIO -->
                             <div class="myzap-form">
                                 <h6 class="mb-3 fw-semibold">Conectar com WhatsApp</h6>
+
                                 <p class="text-muted-small">
                                     Aqui você pode iniciar uma nova conexão com o WhatsApp.
                                 </p>
 
                                 <div class="row g-3">
+
                                     <div class="col-md-6">
                                         <label class="form-label">Session Name *</label>
-                                        <input type="text" id="myzap-sessionname"
-                                            class="form-control myzap-readonly" readonly
-                                            placeholder="Name of the session">
+                                        <input type="text" id="myzap-sessionname" class="form-control myzap-readonly" readonly placeholder="Name of the session">
                                     </div>
+
                                     <div class="col-md-6">
                                         <label class="form-label">Session Key *</label>
-                                        <input type="text" id="myzap-sessionkey"
-                                            class="form-control myzap-readonly" readonly
-                                            placeholder="Key of the session">
+                                        <input type="text" id="myzap-sessionkey" class="form-control myzap-readonly" readonly placeholder="Key of the session">
                                     </div>
+
                                 </div>
 
-                                <div class="alert alert-info myzap-info mt-4">
-                                    Aguardando informações para gerar o QR Code ou iniciar a sessão.
+                                <div id="myzap-modo-info" class="alert alert-info myzap-info mt-4">
+                                    Aguardando informações para gerar o QRCode ou iniciar a sessão.
                                 </div>
 
                                 <div id="ia-config-box" class="ia-config-box d-none mt-3">
-                                    <label class="form-label" for="myzap-mensagem-padrao">
-                                        Mensagem padrão do MyZap
-                                    </label>
+                                    <label class="form-label" for="myzap-mensagem-padrao">Mensagem padrao do MyZap</label>
                                     <textarea id="myzap-mensagem-padrao" class="form-control" rows="4"
-                                        placeholder="Digite a mensagem padrão para respostas da IA"></textarea>
+                                        placeholder="Digite a mensagem padrao para respostas da IA"></textarea>
                                     <div class="d-flex justify-content-end mt-2">
-                                        <button class="btn btn-primary" type="button"
-                                            id="btn-save-ia-config" onclick="salvarMensagemPadrao()">
-                                            Salvar mensagem padrão
+                                        <button class="btn btn-primary" type="button" id="btn-save-ia-config"
+                                            onclick="salvarMensagemPadrao()">
+                                            Salvar mensagem padrao
                                         </button>
                                     </div>
                                 </div>
 
-                                <button class="btn btn-success mt-2" type="button"
-                                    id="btn-start-session" disabled onclick="iniciarSessao()">
+                                <button class="btn btn-success mt-2" type="button" id="btn-start-session" disabled onclick="iniciarSessao()">
                                     Iniciar instância
                                 </button>
-                                <button class="btn btn-danger mt-2" type="button"
-                                    id="btn-delete-session" disabled onclick="deletarSessao()">
+                                <button class="btn btn-danger mt-2" type="button" id="btn-delete-session" disabled onclick="deletarSessao()">
                                     Encerrar instância
                                 </button>
                             </div>
 
-                            <!-- LATERAL: STATUS + QR CODE -->
+                            <!-- LATERAL -->
                             <div class="myzap-side">
+
+                                <!-- STATUS -->
                                 <div class="myzap-status-card">
                                     <div class="d-flex justify-content-between align-items-center mb-2">
                                         <strong>Situação</strong>
-                                        <button class="btn btn-sm btn-outline-secondary"
-                                            title="Atualizar status" onclick="checkConnection()">
+
+                                        <button class="btn btn-sm btn-outline-secondary" title="Atualizar status"
+                                            onclick="checkConnection()">
                                             🔄
                                         </button>
                                     </div>
+
                                     <div class="status-indicator waiting">
                                         Verificando...
                                     </div>
                                 </div>
 
+                                <!-- QR CODE -->
                                 <div class="myzap-qrcode-card">
                                     <strong class="mb-2 d-block">QR Code</strong>
+
                                     <div id="qrcode-box" class="qrcode-box">
-                                        <span class="text-muted-small">QR Code aparecerá aqui</span>
+                                        <span class="text-muted-small">
+                                            QR Code aparecerá aqui
+                                        </span>
                                     </div>
                                 </div>
+
                             </div>
                         </div>
                     </div>
 
+                    <!-- ===================== -->
                     <!-- ABA STATUS -->
+                    <!-- ===================== -->
                     <div class="tab-pane fade" id="status" role="tabpanel">
 
                         <div class="list-group list-group-flush">
+
                             <div class="list-group-item bg-transparent border-bottom border-secondary-subtle">
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div>
                                         <strong class="title-status">API MyZap</strong>
-                                        <div class="text-muted-small">Verifica se a API está rodando e acessível</div>
+                                        <div class="text-muted-small">
+                                            Verifica se a API está rodando e acessível
+                                        </div>
                                     </div>
-                                    <span id="status-api" class="badge bg-secondary status-badge">Não verificado</span>
+
+                                    <span id="status-api" class="badge bg-secondary status-badge">
+                                        Não verificado
+                                    </span>
                                 </div>
                             </div>
 
@@ -146,9 +199,14 @@
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div>
                                         <strong class="title-status">Instalação</strong>
-                                        <div class="text-muted-small">Verifica se o MyZap está instalado no diretório configurado</div>
+                                        <div class="text-muted-small">
+                                            Verifica se o MyZap está instalado no diretório configurado
+                                        </div>
                                     </div>
-                                    <span id="status-installation" class="badge bg-secondary status-badge">Não verificado</span>
+
+                                    <span id="status-installation" class="badge bg-secondary status-badge">
+                                        Não verificado
+                                    </span>
                                 </div>
                             </div>
 
@@ -156,95 +214,109 @@
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div>
                                         <strong class="title-status">Configurações</strong>
-                                        <div class="text-muted-small">Valida se SessionKey e diretório estão preenchidos</div>
+                                        <div class="text-muted-small">
+                                            Valida se SessionKey e diretório estão preenchidos
+                                        </div>
                                     </div>
-                                    <span id="status-config" class="badge bg-secondary status-badge">Incompleto</span>
+
+                                    <span id="status-config" class="badge bg-secondary status-badge">
+                                        Incompleto
+                                    </span>
                                 </div>
                             </div>
+
                         </div>
 
-                        <div class="mt-4 d-flex gap-2">
-                            <button id="btn-start" class="btn btn-success">
+                        <div id="myzap-runtime-info" class="alert alert-secondary mt-3 mb-0"></div>
+
+                        <div class="mt-4 d-flex gap-2 flex-wrap">
+
+                            <button id="btn-start" class="btn btn-success" onclick="iniciarMyZapServico()">
                                 Iniciar MyZap
                             </button>
 
                             <div class="btn-group" id="install-group">
-                                <button id="btn-install" type="button" class="btn btn-primary"
-                                    onclick="installMyZap()">
+
+                                <button id="btn-install" type="button" class="btn btn-primary" onclick="installMyZap()">
                                     Instalar
                                 </button>
+
                                 <button id="btn-install-dropdown" type="button"
                                     class="btn btn-primary dropdown-toggle dropdown-toggle-split d-none"
                                     data-bs-toggle="dropdown" aria-expanded="false">
                                     <span class="visually-hidden">Toggle Dropdown</span>
                                 </button>
+
                                 <ul class="dropdown-menu">
                                     <li>
-                                        <button id="btn-reinstall" class="dropdown-item"
-                                            onclick="reinstallMyZap()">
+                                        <button id="btn-reinstall" class="dropdown-item" onclick="reinstallMyZap()">
                                             Reinstalar
                                         </button>
                                     </li>
                                 </ul>
+
                             </div>
 
-                            <button id="btn-refresh-status" class="btn btn-outline-light"
-                                onclick="atualizaStatus()">
+                            <button id="btn-refresh-status" class="btn btn-outline-light" onclick="atualizaStatus()">
                                 Atualizar Status
                             </button>
-                        </div>
-                    </div>
 
+                            <button id="btn-remove-all" class="btn btn-outline-danger" onclick="removerTudoMyZap()">
+                                🗑 Remover Tudo
+                            </button>
+
+                        </div>
+
+                    </div>
+                    <!-- ===================== -->
                     <!-- ABA CONFIGURAÇÕES -->
+                    <!-- ===================== -->
                     <div class="tab-pane fade" id="config" role="tabpanel">
+
+                        <p class="text-muted mb-3">
+                            Preencha o <strong>TOKEN</strong> antes de instalar o MyZap. As demais configurações (Session Key, diretório, modo) são sincronizadas automaticamente da API ClickExpress.
+                        </p>
+
+                        <!-- ALERTA: preencha antes de instalar -->
+                        <div id="config-install-hint" class="alert alert-warning d-none mb-3">
+                            ⚠ TOKEN não preenchido. Preencha abaixo e clique em <strong>Salvar e Instalar</strong> para concluir a instalação.
+                        </div>
+
+                        <!-- Feedback inline do save -->
+                        <div id="config-save-status" class="d-none alert mb-3"></div>
 
                         <form id="myzap-config-form">
 
                             <div class="mb-3">
-                                <label class="form-label">Diretório do MyZap</label>
-                                <input type="text" class="form-control" id="input-path"
-                                    placeholder="C:/JzTech/projects/myzap" />
+                                <label class="form-label fw-semibold">TOKEN <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" id="input-env-token"
+                                    placeholder="Token de autenticação do MyZap (obrigatório)" />
+                                <div class="form-text">Necessário para o MyZap iniciar. Qualquer valor serve (ex: sua chave gerada).</div>
                             </div>
 
                             <div class="mb-3">
-                                <label class="form-label">Session Key</label>
-                                <input type="text" class="form-control" id="input-sessionkey"
-                                    placeholder="Informe a SessionKey do MyZap" />
+                                <label class="form-label">OPENAI_API_KEY</label>
+                                <input type="text" class="form-control" id="input-env-openai"
+                                    placeholder="Chave da API OpenAI (opcional)" />
                             </div>
 
                             <div class="mb-4">
-                                <label class="form-label">API Token</label>
-                                <input type="text" class="form-control" id="input-apitoken"
-                                    placeholder="Token de autenticação, se aplicável" />
+                                <label class="form-label">EMAIL_TOKEN</label>
+                                <input type="text" class="form-control" id="input-env-emailtoken"
+                                    placeholder="Token do serviço de email (opcional)" />
                             </div>
 
-                            <div class="mb-4">
-                                <label class="form-label">Conteúdo do .env</label>
-                                <textarea class="form-control" id="input-env" rows="6"
-                                    placeholder="Cole o conteúdo do arquivo .env aqui"></textarea>
-                            </div>
-
-                            <div class="mb-4">
-                                <h6 class="mb-3 fw-semibold">ClickExpress</h6>
-                                <div class="mb-3">
-                                    <label class="form-label">URL API ClickExpress</label>
-                                    <input type="text" class="form-control" id="input-clickexpress-apiurl"
-                                        placeholder="https://sua-api-clickexpress.com/" />
-                                </div>
-                                <div>
-                                    <label class="form-label">Token ClickExpress (Fila)</label>
-                                    <input type="text" class="form-control" id="input-clickexpress-token"
-                                        placeholder="Bearer fixo para consultar/atualizar fila" />
-                                </div>
-                            </div>
-
-                            <div class="d-flex gap-2">
+                            <div class="d-flex gap-2 flex-wrap">
                                 <button type="submit" id="btn-save-config" class="btn btn-success">
                                     Salvar Configurações
+                                </button>
+                                <button type="button" id="btn-save-and-install" class="btn btn-primary d-none" onclick="salvarEInstalar()">
+                                    🚀 Salvar e Instalar
                                 </button>
                             </div>
 
                         </form>
+
                     </div>
 
                 </div>
@@ -257,3 +329,5 @@
 </body>
 
 </html>
+
+

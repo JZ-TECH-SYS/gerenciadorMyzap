@@ -10,22 +10,20 @@
 
 <body>
     <div class="container py-4">
-        <div class="card shadow-sm">
+            <div class="card shadow-sm">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">📬 Fila MyZap</h5>
+                <h5 class="mb-0">Fila MyZap</h5>
             </div>
             <div class="card-body">
-
-                <!-- Controle do processo -->
                 <div class="fila-card mb-3">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <strong>Processo da fila</strong>
                         <span id="queue-process-status" class="badge bg-secondary status-badge">Parado</span>
                     </div>
                     <div class="text-muted-small mb-3">
-                        Última execução: <span id="queue-last-run">-</span> &nbsp;|&nbsp;
-                        Último lote: <span id="queue-last-batch">0</span> &nbsp;|&nbsp;
-                        Próxima requisição em: <span id="queue-next-run-countdown">-</span>
+                        Ultima execucao: <span id="queue-last-run">-</span> |
+                        Ultimo lote: <span id="queue-last-batch">0</span> |
+                        Proxima requisicao em: <span id="queue-next-run-countdown">-</span>
                     </div>
 
                     <div id="queue-error-alert" class="alert alert-danger queue-error-alert d-none mb-3" role="alert"></div>
@@ -37,10 +35,12 @@
                         <button id="btn-stop-queue" class="btn btn-outline-danger" type="button">
                             Parar processo da fila
                         </button>
+                        <button id="btn-force-cycle" class="btn btn-outline-info" type="button">
+                            &#x1F504; Buscar agora
+                        </button>
                     </div>
                 </div>
 
-                <!-- Mensagens pendentes -->
                 <div class="fila-card">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <strong>Mensagens pendentes</strong>
@@ -51,10 +51,10 @@
                             <thead>
                                 <tr>
                                     <th>ID Fila</th>
-                                    <th>Número</th>
+                                    <th>Numero</th>
                                     <th>Mensagem</th>
                                     <th>Status</th>
-                                    <th>Data inclusão</th>
+                                    <th>Data inclusao</th>
                                 </tr>
                             </thead>
                             <tbody id="queue-pendentes-body">
@@ -66,6 +66,27 @@
                     </div>
                 </div>
 
+                <!-- Log em tempo real -->
+                <div class="fila-card mt-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <strong>Log da fila (tempo real)</strong>
+                        <div class="d-flex gap-2 align-items-center">
+                            <select id="log-level-filter" class="form-select form-select-sm log-level-select">
+                                <option value="all" selected>Todos</option>
+                                <option value="info">Info</option>
+                                <option value="warn">Aviso</option>
+                                <option value="error">Erro</option>
+                                <option value="debug">Debug</option>
+                            </select>
+                            <button id="btn-clear-log" class="btn btn-sm btn-outline-secondary" type="button" title="Limpar log">
+                                Limpar
+                            </button>
+                        </div>
+                    </div>
+                    <div id="queue-log-container" class="queue-log-container">
+                        <div class="text-center text-muted-small py-3">Aguardando logs...</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

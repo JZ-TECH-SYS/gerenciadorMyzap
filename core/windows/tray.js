@@ -1,12 +1,15 @@
-/* ─── Tray (apenas MyZap) ──────────────────────────────────────────── */
 const { Menu, Tray } = require('electron');
 
 let trayInstance = null;
 let actions = null;
+let getMyzapStatus = () => false;
 let appVersion = '?.?.?';
 
-function buildMenuTemplate(callbacks) {
+function buildMenuTemplate(myzapAtivo, callbacks) {
   const {
+    createSettings,
+    toggleMyzap,
+    updateMyZapNow,
     createPainelMyZap,
     createFilaMyZap,
     openLogViewer,
@@ -15,39 +18,56 @@ function buildMenuTemplate(callbacks) {
   } = callbacks;
 
   return [
+    { label: '📱  Gerenciador MyZap', enabled: false },
+    { label: `      v${appVersion}`, enabled: false },
+    { type: 'separator' },
+    { label: '── MyZap ──', enabled: false },
     {
-      label: '💬 WhatsApp',
-      enabled: false
+      label: myzapAtivo ? '🟢  MyZap ativo' : '🔴  MyZap pausado',
+      click: toggleMyzap
     },
-    { label: '🔗 Painel MyZap', click: createPainelMyZap },
-    { label: '📬 Fila MyZap', click: createFilaMyZap },
+    { label: '🔄  Atualizar MyZap agora', click: updateMyZapNow },
+    { label: '💬  Painel MyZap', click: createPainelMyZap },
+    { label: '📬  Fila de mensagens', click: createFilaMyZap },
     { type: 'separator' },
-    { label: '📄 Ver Logs', click: openLogViewer },
-    { label: '📁 Abrir Pasta de Logs', click: abrirPastaLogs },
-    { type: 'separator' },
+    { label: '── Sistema ──', enabled: false },
+    { label: '⚙️  Configuracoes da API', click: createSettings },
+    { label: '📋  Ver logs', click: openLogViewer },
+    { label: '📁  Abrir pasta de logs', click: abrirPastaLogs },
     {
-      label: `Versão ${appVersion}`,
+      label: '🔎  Verificar atualizacao',
       click: () => checkUpdates?.(),
       enabled: !!checkUpdates
     },
-    { label: '🚪 Sair', role: 'quit' }
+    { type: 'separator' },
+    { label: '🚪  Sair', role: 'quit' }
   ];
 }
 
-function init(iconPath, callbackSet, version = '?.?.?') {
+function init(iconPath, callbackSet, version = '?.?.?', myzapStatusState) {
   actions = callbackSet;
   appVersion = version;
 
+  if (typeof myzapStatusState === 'function') {
+    getMyzapStatus = myzapStatusState;
+  }
+
   trayInstance = new Tray(iconPath);
-  trayInstance.setToolTip('Gerenciador MyZap');
+  trayInstance.setToolTip(`Gerenciador MyZap  v${version}`);
   rebuildMenu();
   return trayInstance;
 }
 
 function rebuildMenu() {
-  if (!trayInstance || !actions) return;
-  const menu = Menu.buildFromTemplate(buildMenuTemplate(actions));
+  if (!trayInstance || !actions) {
+    return;
+  }
+
+  const menu = Menu.buildFromTemplate(buildMenuTemplate(getMyzapStatus(), actions));
   trayInstance.setContextMenu(menu);
 }
 
-module.exports = { init, rebuildMenu };
+module.exports = {
+  init,
+  rebuildMenu
+};

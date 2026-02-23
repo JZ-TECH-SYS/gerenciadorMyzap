@@ -1,8 +1,13 @@
-const LOOP_INTERVAL_FALLBACK_MS = 30000;
+const LOOP_INTERVAL_FALLBACK_MS = 3000;
+const LOG_POLL_MS = 4000;
+const MAX_LOG_LINES_UI = 200;
 
 let nextRunAt = null;
 let pollingHandle = null;
 let countdownHandle = null;
+let logPollingHandle = null;
+let lastLogTimestamp = null;
+let logEntries = [];
 
 function formatDateTime(value) {
   if (!value) return '-';
@@ -97,9 +102,13 @@ function renderCountdown() {
   }
 
   const totalSec = Math.ceil(remainingMs / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  countdown.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  if (totalSec < 60) {
+    countdown.textContent = `${totalSec}s`;
+  } else {
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    countdown.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  }
 }
 
 async function atualizarStatusProcessoFila() {
@@ -210,9 +219,143 @@ async function refreshAll() {
   await atualizarFilaMyZap();
 }
 
+// ── Buscar Agora ─────────────────────────────────────────
+
+async function forcarBuscaAgora() {
+  const btn = document.getElementById('btn-force-cycle');
+  if (!btn) return;
+
+  btn.disabled = true;
+  const txt = btn.textContent;
+  btn.textContent = 'Buscando...';
+
+  try {
+    const result = await window.api.forceQueueCycle();
+    if (result?.status !== 'success') {
+      throw new Error(result?.message || 'Falha ao executar busca manual');
+    }
+    showInlineError('');
+    await refreshAll();
+    await fetchAndRenderLogs();
+  } catch (e) {
+    showInlineError(`Erro ao buscar agora: ${e?.message || e}`);
+  } finally {
+    btn.textContent = txt;
+    btn.disabled = false;
+  }
+}
+
+// ── Log em tempo real ────────────────────────────────────
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function formatLogTimestamp(isoString) {
+  if (!isoString) return '';
+  const dt = new Date(isoString);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toLocaleString('pt-BR', {
+    day: '2-digit', month: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
+function formatMeta(metadata) {
+  if (!metadata || typeof metadata !== 'object') return '';
+  const entries = Object.entries(metadata).filter(([k]) => k !== 'area');
+  if (!entries.length) return '';
+  return entries.map(([k, v]) => {
+    const val = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return `${k}: ${val}`;
+  }).join(', ');
+}
+
+function getActiveLogLevel() {
+  const select = document.getElementById('log-level-filter');
+  return select ? select.value : 'all';
+}
+
+function renderLogEntries() {
+  const container = document.getElementById('queue-log-container');
+  if (!container) return;
+
+  const filterLevel = getActiveLogLevel();
+  const filtered = filterLevel === 'all'
+    ? logEntries
+    : logEntries.filter((e) => e.level === filterLevel);
+
+  if (!filtered.length) {
+    container.innerHTML = '<div class="text-center text-muted-small py-3">Nenhum log ' +
+      (filterLevel !== 'all' ? `(${filterLevel}) ` : '') + 'encontrado.</div>';
+    return;
+  }
+
+  const html = filtered.map((entry) => {
+    const ts = formatLogTimestamp(entry.timestamp);
+    const level = (entry.level || 'info').toLowerCase();
+    const msg = escapeHtml(entry.message || '');
+    const meta = formatMeta(entry.metadata);
+    return `<div class="log-line">
+      <span class="log-ts">${ts}</span>
+      <span class="log-level-tag ${level}">${escapeHtml(level)}</span>
+      <span class="log-msg">${msg}${meta ? ' <span class="log-meta">| ' + escapeHtml(meta) + '</span>' : ''}</span>
+    </div>`;
+  }).join('');
+
+  container.innerHTML = html;
+
+  // Auto-scroll para o final
+  container.scrollTop = container.scrollHeight;
+}
+
+async function fetchAndRenderLogs() {
+  try {
+    const entries = await window.api.getQueueLogs(MAX_LOG_LINES_UI);
+    if (!Array.isArray(entries) || !entries.length) return;
+
+    // Filtrar apenas entradas mais recentes que o ultimo timestamp conhecido
+    // ou carregar tudo na primeira vez
+    if (lastLogTimestamp) {
+      const newEntries = entries.filter((e) => e.timestamp > lastLogTimestamp);
+      if (newEntries.length) {
+        logEntries = logEntries.concat(newEntries);
+        // Manter no maximo MAX_LOG_LINES_UI
+        if (logEntries.length > MAX_LOG_LINES_UI) {
+          logEntries = logEntries.slice(-MAX_LOG_LINES_UI);
+        }
+      }
+    } else {
+      logEntries = entries.slice(-MAX_LOG_LINES_UI);
+    }
+
+    if (logEntries.length) {
+      lastLogTimestamp = logEntries[logEntries.length - 1].timestamp;
+    }
+
+    renderLogEntries();
+  } catch (_e) {
+    // Silencioso — o proximo poll tenta novamente
+  }
+}
+
+function clearLogView() {
+  logEntries = [];
+  lastLogTimestamp = null;
+  const container = document.getElementById('queue-log-container');
+  if (container) {
+    container.innerHTML = '<div class="text-center text-muted-small py-3">Log limpo.</div>';
+  }
+}
+
 (async () => {
   const btnStart = document.getElementById('btn-start-queue');
   const btnStop = document.getElementById('btn-stop-queue');
+  const btnForce = document.getElementById('btn-force-cycle');
+  const btnClearLog = document.getElementById('btn-clear-log');
+  const logLevelFilter = document.getElementById('log-level-filter');
 
   if (btnStart) {
     btnStart.addEventListener('click', iniciarFilaMyZap);
@@ -222,13 +365,28 @@ async function refreshAll() {
     btnStop.addEventListener('click', pararFilaMyZap);
   }
 
+  if (btnForce) {
+    btnForce.addEventListener('click', forcarBuscaAgora);
+  }
+
+  if (btnClearLog) {
+    btnClearLog.addEventListener('click', clearLogView);
+  }
+
+  if (logLevelFilter) {
+    logLevelFilter.addEventListener('change', renderLogEntries);
+  }
+
   await refreshAll();
+  await fetchAndRenderLogs();
 
   pollingHandle = setInterval(refreshAll, 3000);
   countdownHandle = setInterval(renderCountdown, 1000);
+  logPollingHandle = setInterval(fetchAndRenderLogs, LOG_POLL_MS);
 
   window.addEventListener('beforeunload', () => {
     if (pollingHandle) clearInterval(pollingHandle);
     if (countdownHandle) clearInterval(countdownHandle);
+    if (logPollingHandle) clearInterval(logPollingHandle);
   });
 })();

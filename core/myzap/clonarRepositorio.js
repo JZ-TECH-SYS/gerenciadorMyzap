@@ -1,163 +1,175 @@
-const { spawn, execSync } = require('child_process');
-const { error: logError } = require('../utils/logger');
+const { spawn } = require('child_process');
+const { error: logError, warn, info } = require('./myzapLogger');
 const path = require('path');
 const fs = require('fs');
+const { killProcessesOnPort, commandExists, getPnpmCommand } = require('./processUtils');
+const { iniciarMyZap } = require('./iniciarMyZap');
+const { syncMyZapConfigs } = require('./syncConfigs');
+const { transition } = require('./stateMachine');
 
-/**
- * Executa um comando shell e retorna se foi bem-sucedido
- */
 function rodarComando(comando, args, opcoes = {}) {
-  return new Promise((resolve) => {
-    const proc = spawn(comando, args, { shell: true, ...opcoes });
+    return new Promise((resolve) => {
+        const proc = spawn(comando, args, { shell: true, ...opcoes });
 
-    proc.stdout.on('data', (data) => console.log(`[${comando}]: ${data}`));
-    proc.stderr.on('data', (data) => console.error(`[${comando}-err]: ${data}`));
+        proc.stdout.on('data', (data) => {
+            info('MyZap comando stdout', {
+                metadata: {
+                    area: 'clonarRepositorio',
+                    comando,
+                    output: String(data).trim()
+                }
+            });
+        });
+        proc.stderr.on('data', (data) => {
+            warn('MyZap comando stderr', {
+                metadata: {
+                    area: 'clonarRepositorio',
+                    comando,
+                    output: String(data).trim()
+                }
+            });
+        });
 
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
-  });
+        proc.on('close', (code) => resolve(code === 0));
+        proc.on('error', () => resolve(false));
+    });
 }
 
-function pararProcessoPorta() {
-  try {
-    const stdout = execSync('netstat -ano | findstr :5555').toString();
-    const lines = stdout.split('\n');
-    if (lines.length > 0) {
-      const line = lines[0].trim();
-      const parts = line.split(/\s+/);
-      const pid = parts[parts.length - 1];
-      if (pid && pid !== '0') {
-        console.log(`Matando processo MyZap (PID: ${pid})...`);
-        execSync(`taskkill /F /PID ${pid}`);
-      }
-    }
-  } catch (e) {
-    console.log('Nenhum processo rodando na porta 5555 ou erro ao finalizar. Erro:', e.message);
-  }
-}
+async function clonarRepositorio(dirPath, envContent, reinstall = false, options = {}) {
+    try {
+        const reportProgress = (typeof options.onProgress === 'function')
+            ? options.onProgress
+            : () => {};
 
-function verificarDependencia(comando) {
-  return new Promise((resolve) => {
-    const check = spawn(comando, ['--version'], { shell: true });
-    check.on('error', () => resolve(false));
-    check.on('close', (code) => resolve(code === 0));
-  });
-}
+        reportProgress('Validando pre-requisitos locais (Git/Node/PNPM)...', 'precheck', {
+            percent: 10,
+            dirPath
+        });
 
-function tentarInstalar(programa) {
-  const wingetIds = {
-    git: 'Git.Git',
-    node: 'OpenJS.NodeJS.LTS'
-  };
-  const id = wingetIds[programa];
-  if (!id) return Promise.resolve(false);
+        transition('checking_config', { message: 'Verificando pre-requisitos locais...', dirPath });
 
-  return rodarComando('winget', [
-    'install', '--id', id, '-e', '--source', 'winget',
-    '--accept-package-agreements', '--accept-source-agreements', '--silent'
-  ]);
-}
-
-/**
- * Clona o repositório MyZap, instala dependências e inicia o serviço
- * @param {string} dirPath   Caminho destino da instalação
- * @param {string} envContent Conteúdo do arquivo .env
- * @param {boolean} reinstall Se true, remove a instalação existente antes de clonar
- */
-async function clonarRepositorio(dirPath, envContent, reinstall = false) {
-  try {
-    // 1. Verificações de ambiente
-    if (!(await verificarDependencia('git'))) {
-      if (!(await tentarInstalar('git'))) {
-        return { status: 'error', message: 'Falha ao instalar Git.' };
-      }
-    }
-    if (!(await verificarDependencia('node'))) {
-      if (!(await tentarInstalar('node'))) {
-        return { status: 'error', message: 'Falha ao instalar Node.js.' };
-      }
-    }
-
-    // 2. Lógica de reinstalação
-    if (reinstall) {
-      console.log('Iniciando modo de reinstalação...');
-      pararProcessoPorta();
-      await new Promise((r) => setTimeout(r, 500));
-
-      if (fs.existsSync(dirPath)) {
-        try {
-          console.log('Removendo pasta via comando do sistema...');
-          execSync(`rd /s /q "${dirPath}"`);
-        } catch (err) {
-          logError('Erro ao deletar pasta via RD', { metadata: { err } });
-          if (fs.existsSync(dirPath)) {
-            fs.rmSync(dirPath, { recursive: true, force: true });
-          }
+        if (!(await commandExists('git'))) {
+            return {
+                status: 'error',
+                message: 'Git nao encontrado no sistema. Instale o Git e tente novamente.'
+            };
         }
-      }
+
+        if (!(await commandExists('node'))) {
+            return {
+                status: 'error',
+                message: 'Node.js nao encontrado no sistema. Instale o Node.js e tente novamente.'
+            };
+        }
+
+        const pnpmRunner = await getPnpmCommand();
+        if (!pnpmRunner) {
+            return {
+                status: 'error',
+                message: 'PNPM/NPX nao encontrado. Instale Node.js com npm/npx ou PNPM.'
+            };
+        }
+
+        if (reinstall) {
+            reportProgress('Reinstalacao solicitada. Limpando instalacao anterior...', 'reinstall_cleanup', {
+                percent: 20,
+                dirPath
+            });
+            info('Iniciando modo de reinstalacao do MyZap', { metadata: { dirPath } });
+
+            const killResult = killProcessesOnPort(5555);
+            if (killResult.failed.length > 0) {
+                warn('Nao foi possivel finalizar alguns processos na porta 5555', {
+                    metadata: { failed: killResult.failed }
+                });
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
+            if (fs.existsSync(dirPath)) {
+                try {
+                    fs.rmSync(dirPath, { recursive: true, force: true });
+                } catch (err) {
+                    logError('Erro ao remover pasta do MyZap na reinstalacao', { metadata: { err, dirPath } });
+                    return {
+                        status: 'error',
+                        message: `Falha ao remover diretorio atual do MyZap: ${err.message}`
+                    };
+                }
+            }
+        }
+
+        const repoUrl = 'https://github.com/JZ-TECH-SYS/myzap.git';
+        fs.mkdirSync(path.dirname(dirPath), { recursive: true });
+
+        transition('cloning_repo', { message: 'Clonando repositorio do MyZap...', dirPath });
+
+        reportProgress('Baixando projeto MyZap (git clone)...', 'clone_repo', {
+            percent: 35,
+            dirPath
+        });
+        const clonou = await rodarComando('git', ['clone', repoUrl, dirPath]);
+
+        if (!clonou) {
+            return { status: 'error', message: 'Erro ao clonar o repositorio. Verifique se a pasta ja existe.' };
+        }
+
+        transition('installing_dependencies', { message: 'Instalando dependencias do MyZap...', dirPath });
+
+        reportProgress('Instalando dependencias do MyZap (pnpm install)...', 'install_dependencies', {
+            percent: 55,
+            dirPath
+        });
+        const instalouDeps = await rodarComando(
+            pnpmRunner.command,
+            [...pnpmRunner.prefixArgs, 'install'],
+            { cwd: dirPath }
+        );
+
+        if (!instalouDeps) {
+            return {
+                status: 'error',
+                message: 'Repositorio clonado, mas houve erro ao instalar dependencias do MyZap.'
+            };
+        }
+
+        reportProgress('Aplicando configuracoes locais (.env e banco base)...', 'sync_configs', {
+            percent: 75,
+            dirPath
+        });
+        const syncResult = syncMyZapConfigs(dirPath, {
+            envContent,
+            overwriteDb: true
+        });
+
+        if (syncResult.status === 'error') {
+            return syncResult;
+        }
+
+        reportProgress('Iniciando servico local do MyZap...', 'start_service', {
+            percent: 88,
+            dirPath
+        });
+        const startResult = await iniciarMyZap(dirPath, {
+            onProgress: reportProgress
+        });
+        if (startResult?.status === 'error') {
+            return startResult;
+        }
+
+        reportProgress('MyZap local iniciado. Finalizando ajustes...', 'start_confirmed', {
+            percent: 95,
+            dirPath
+        });
+        return {
+            status: 'success',
+            message: 'MyZap instalado, configurado e iniciado com sucesso!'
+        };
+    } catch (err) {
+        transition('error', { message: err?.message || String(err), phase: 'clone_install' });
+        logError('Erro critico no processo de instalacao', { metadata: { error: err } });
+        return { status: 'error', message: `Erro: ${err.message}` };
     }
-
-    // 3. Clone do repositório
-    const repoUrl = 'https://github.com/JZ-TECH-SYS/myzap.git';
-    console.log('Iniciando clone...');
-    const clonou = await rodarComando('git', ['clone', repoUrl, dirPath]);
-
-    if (!clonou) {
-      return {
-        status: 'error',
-        message: 'Erro ao clonar o repositório. Verifique se a pasta já existe.'
-      };
-    }
-
-    // 4. Instalar pnpm globalmente
-    console.log('Instalando pnpm globalmente...');
-    const pnpmGlobal = await rodarComando('npm', ['install', '-g', 'pnpm']);
-    if (!pnpmGlobal) {
-      return { status: 'error', message: 'Falha ao instalar pnpm globalmente.' };
-    }
-
-    // 5. Instalar dependências do projeto
-    console.log('Instalando dependências do projeto...');
-    const instalouDeps = await rodarComando('pnpm', ['install'], { cwd: dirPath });
-    if (!instalouDeps) {
-      return {
-        status: 'error',
-        message: 'Repositório clonado, mas houve erro ao instalar dependências (pnpm install).'
-      };
-    }
-
-    // 6. Configuração de arquivos (.env e banco de dados)
-    console.log('Configurando arquivo .env e banco de dados...');
-
-    const envDest = path.join(dirPath, '.env');
-    fs.writeFileSync(envDest, envContent, 'utf8');
-
-    const dbOrigem = path.join(__dirname, 'database', 'db.sqlite');
-    const dbDestDir = path.join(dirPath, 'database');
-    const dbDestFile = path.join(dbDestDir, 'db.sqlite');
-
-    if (!fs.existsSync(dbDestDir)) {
-      fs.mkdirSync(dbDestDir, { recursive: true });
-    }
-
-    if (fs.existsSync(dbOrigem)) {
-      fs.copyFileSync(dbOrigem, dbDestFile);
-    } else {
-      console.warn('Aviso: Banco de dados original não encontrado em ' + dbOrigem);
-    }
-
-    // 7. Iniciar o projeto
-    console.log('Iniciando MyZap...');
-    rodarComando('pnpm', ['start'], { cwd: dirPath });
-
-    return {
-      status: 'success',
-      message: 'MyZap instalado, configurado e iniciado com sucesso!'
-    };
-  } catch (err) {
-    logError('Erro crítico no processo de instalação', { metadata: { error: err } });
-    return { status: 'error', message: `Erro: ${err.message}` };
-  }
 }
 
 module.exports = clonarRepositorio;

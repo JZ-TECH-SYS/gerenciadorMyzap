@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Configuracoes - Gerenciador MyZap</title>
+    <link rel="stylesheet" href="../css/bootstrap5.0.2.min.css" />
+    <link rel="stylesheet" href="../css/settings.css" />
+  </head>
+
+  <body>
+    <div class="card">
+      <h5 class="text-center">Configuracoes da API</h5>
+
+      <form id="cfg">
+        <div class="input-group mb-3">
+          <span class="input-group-text form-icon">🏢</span>
+          <input
+            class="form-control"
+            id="idempresa"
+            type="number"
+            min="1"
+            placeholder="ID da empresa"
+            required
+          />
+        </div>
+
+        <div class="input-group mb-3">
+          <span class="input-group-text form-icon">🌐</span>
+          <input
+            class="form-control"
+            id="api"
+            type="url"
+            placeholder="https://api.seusistema.com"
+            required
+          />
+        </div>
+
+        <div class="input-group mb-4">
+          <span class="input-group-text form-icon">🔑</span>
+          <input
+            class="form-control"
+            id="token"
+            type="text"
+            placeholder="Token de autenticacao da API"
+            required
+          />
+        </div>
+
+        <button class="btn btn-primary w-100" type="submit">Salvar</button>
+      </form>
+    </div>
+
+    <script src="../js/bootstrap5.0.2.js"></script>
+    <script src="../js/settings.js"></script>
+  </body>
+</html>

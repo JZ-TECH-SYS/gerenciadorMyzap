@@ -4,14 +4,21 @@
   "version": "1.0.0",
   "main": "main.js",
   "author": "JZ-TECH-SYS",
+  "packageManager": "pnpm@10.29.3",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
     "dev": "nodemon --exec electron .",
+    "build:icons": "powershell -ExecutionPolicy Bypass -File scripts/generate-windows-icon.ps1",
+    "prepack": "pnpm run build:icons",
     "pack": "electron-builder --dir",
+    "prebuild": "pnpm run build:icons",
     "build": "electron-builder",
+    "predist": "pnpm run build:icons",
     "dist": "electron-builder",
+    "predist:win32": "pnpm run build:icons",
     "dist:win32": "electron-builder --win --ia32 --config.directories.output=dist/win32",
+    "predist:win64": "pnpm run build:icons",
     "dist:win64": "electron-builder --win --x64 --config.directories.output=dist/win64",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -40,7 +47,7 @@
     },
     "win": {
       "target": ["nsis"],
-      "icon": "assets/icon.png",
+      "icon": "assets/icon.ico",
       "artifactName": "gerenciador-myzap-Setup-${version}.${ext}"
     },
     "nsis": {
@@ -49,7 +56,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Gerenciador MyZap"
+      "shortcutName": "Gerenciador MyZap",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
     },
     "publish": [
       {

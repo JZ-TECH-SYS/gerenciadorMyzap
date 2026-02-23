@@ -1,34 +1,28 @@
-/* preload.js — Expõe apenas as APIs do MyZap ao renderer */
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
-  // Config store
-  getStore: (key) => ipcRenderer.invoke('settings:get', key),
-
-  // Salvar configurações do MyZap
   send: (channel, data) => ipcRenderer.send(channel, data),
   on: (channel, func) => ipcRenderer.on(channel, (_event, ...args) => func(...args)),
-
-  // Instalação e diretório
+  getStore: (key) => ipcRenderer.invoke('settings:get', key),
   checkDirectoryHasFiles: (dirPath) => ipcRenderer.invoke('myzap:checkDirectoryHasFiles', dirPath),
-  cloneRepository: (dirPath, envContent, reinstall = false) =>
-    ipcRenderer.invoke('myzap:cloneRepository', dirPath, envContent, reinstall),
-
-  // Ciclo de vida do serviço MyZap
+  cloneRepository: (dirPath, envContent, reinstall = false) => ipcRenderer.invoke('myzap:cloneRepository', dirPath, envContent, reinstall),
   iniciarMyZap: (dirPath) => ipcRenderer.invoke('myzap:iniciarMyZap', dirPath),
-
-  // Sessão WhatsApp
+  prepareMyZapAutoConfig: (forceRemote = false) => ipcRenderer.invoke('myzap:prepareAutoConfig', forceRemote),
+  ensureMyZapStarted: (forceRemote = false) => ipcRenderer.invoke('myzap:ensureStarted', forceRemote),
   getConnectionStatus: () => ipcRenderer.invoke('myzap:getConnectionStatus'),
   verifyRealStatus: () => ipcRenderer.invoke('myzap:verifyRealStatus'),
   startSession: () => ipcRenderer.invoke('myzap:startSession'),
   deleteSession: () => ipcRenderer.invoke('myzap:deleteSession'),
-
-  // Configuração de IA
   updateIaConfig: (mensagemPadrao) => ipcRenderer.invoke('myzap:updateIaConfig', mensagemPadrao),
-
-  // Fila de mensagens
   startQueueWatcher: () => ipcRenderer.invoke('myzap:startQueueWatcher'),
   stopQueueWatcher: () => ipcRenderer.invoke('myzap:stopQueueWatcher'),
   getQueueWatcherStatus: () => ipcRenderer.invoke('myzap:getQueueWatcherStatus'),
-  getQueuePendentes: () => ipcRenderer.invoke('myzap:getQueuePendentes')
+  getQueuePendentes: () => ipcRenderer.invoke('myzap:getQueuePendentes'),
+  forceQueueCycle: () => ipcRenderer.invoke('myzap:forceQueueCycle'),
+  getQueueLogs: (maxLines) => ipcRenderer.invoke('myzap:getQueueLogs', maxLines),
+  saveEnvSecrets: (secrets) => ipcRenderer.invoke('myzap:saveEnvSecrets', secrets),
+  readEnvSecrets: () => ipcRenderer.invoke('myzap:readEnvSecrets'),
+  resetEnvironment: (options) => ipcRenderer.invoke('myzap:resetEnvironment', options),
+  getStateSnapshot: () => ipcRenderer.invoke('myzap:getStateSnapshot'),
+  clearUserRemovedFlag: () => ipcRenderer.invoke('myzap:clearUserRemovedFlag')
 });

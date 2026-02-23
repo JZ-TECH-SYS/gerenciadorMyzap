@@ -1,4 +1,7 @@
-/* ── BASE / RESET ───────────────────────────────────────── */
+/* =====================================================
+   BASE / RESET VISUAL
+===================================================== */
+
 body {
     background: radial-gradient(1200px 600px at top, #020617, #01030d);
     color: #e5e7eb;
@@ -14,18 +17,56 @@ body {
         inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
-/* ── NAV TABS ─────────────────────────────────────────── */
-.nav-tabs { border-bottom: 1px solid #1e293b; }
-.nav-tabs .nav-link { color: #94a3b8; background: transparent; border: none; padding: 10px 16px; font-weight: 500; transition: all 0.2s ease; }
-.nav-tabs .nav-link:hover { color: #e5e7eb; }
-.nav-tabs .nav-link.active { background-color: transparent; color: #10b981; border-bottom: 2px solid #10b981; }
+/* =====================================================
+   NAV TABS
+===================================================== */
 
-/* ── TEXTOS ───────────────────────────────────────────── */
-.title-status { color: #f8fafc; }
-.text-muted-small { font-size: 0.85rem; color: #94a3b8; line-height: 1.4; }
+.nav-tabs {
+    border-bottom: 1px solid #1e293b;
+}
 
-/* ── FORMULÁRIOS ─────────────────────────────────────── */
-.form-label { font-size: 0.8rem; font-weight: 600; color: #cbd5e1; }
+.nav-tabs .nav-link {
+    color: #94a3b8;
+    background: transparent;
+    border: none;
+    padding: 10px 16px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.nav-tabs .nav-link:hover {
+    color: #e5e7eb;
+}
+
+.nav-tabs .nav-link.active {
+    background-color: transparent;
+    color: #10b981;
+    border-bottom: 2px solid #10b981;
+}
+
+/* =====================================================
+   TEXTOS
+===================================================== */
+
+.title-status {
+    color: #f8fafc;
+}
+
+.text-muted-small {
+    font-size: 0.85rem;
+    color: #94a3b8;
+    line-height: 1.4;
+}
+
+/* =====================================================
+   FORMULÁRIOS
+===================================================== */
+
+.form-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #cbd5e1;
+}
 
 .form-control,
 .form-select {
@@ -37,101 +78,230 @@ body {
     transition: border-color 0.2s ease, background-color 0.2s ease;
 }
 
-.form-control::placeholder { color: #64748b; }
-.form-control:focus { border-color: #10b981; background-color: #020617; box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15); color: #e5e7eb; }
+.form-control::placeholder {
+    color: #64748b;
+}
 
-textarea.form-control { resize: vertical; }
+.form-control:focus {
+    border-color: #10b981;
+    background-color: #020617;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+}
 
 /* readonly */
-.myzap-readonly { background-color: #1e293b !important; color: #e5e7eb; cursor: not-allowed; }
-.myzap-readonly::placeholder { color: #cbd5e1; }
+.myzap-readonly {
+    background-color: #1e293b !important;
+    color: #e5e7eb;
+    cursor: not-allowed;
+}
 
-/* ── BOTÕES ──────────────────────────────────────────── */
-.btn { border-radius: 8px; font-weight: 600; }
+.myzap-readonly::placeholder {
+    color: #cbd5e1;
+}
 
-.btn-success { background: linear-gradient(135deg, #10b981, #059669); border: none; }
-.btn-success:hover { filter: brightness(1.05); }
-.btn-success:disabled { opacity: 0.5; }
+/* =====================================================
+   BOTÕES
+===================================================== */
 
-.btn-danger { background: linear-gradient(135deg, #ef4444, #dc2626); border: none; }
-.btn-danger:hover { filter: brightness(1.05); }
-.btn-danger:disabled { opacity: 0.5; }
+.btn {
+    border-radius: 8px;
+    font-weight: 600;
+}
 
-.btn-primary { background: linear-gradient(135deg, #3b82f6, #2563eb); border: none; }
-.btn-primary:hover { filter: brightness(1.05); }
+.btn-success {
+    background: linear-gradient(135deg, #10b981, #059669);
+    border: none;
+}
 
-.btn-outline-secondary { border-color: #334155; color: #cbd5e1; }
-.btn-outline-secondary:hover { background-color: #1e293b; }
+.btn-success:hover {
+    filter: brightness(1.05);
+}
 
-/* ── BADGES / STATUS ─────────────────────────────────── */
-.status-badge { font-size: 0.75rem; padding: 6px 10px; border-radius: 999px; }
+.btn-outline-secondary {
+    border-color: #334155;
+    color: #cbd5e1;
+}
 
-/* ── GRID MYZAP ─────────────────────────────────────── */
-.myzap-grid { display: grid; grid-template-columns: 1fr 320px; gap: 24px; }
-@media (max-width: 700px) { .myzap-grid { grid-template-columns: 1fr; } }
+.btn-outline-secondary:hover {
+    background-color: #1e293b;
+}
 
-/* ── CARD STATUS / QR CODE ───────────────────────────── */
-.myzap-status-card,
+/* =====================================================
+   STATUS BADGE
+===================================================== */
+
+.status-badge {
+    font-size: 0.75rem;
+    padding: 6px 10px;
+    border-radius: 999px;
+}
+
+/* =====================================================
+   MYZAP LAYOUT
+===================================================== */
+
+.myzap-grid {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 28px;
+}
+
+.myzap-form {
+    background: linear-gradient(180deg, #020617, #020617);
+    border: 1px solid #1e293b;
+    border-radius: 16px;
+    padding: 28px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.01);
+}
+
+.myzap-side {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* =====================================================
+   INFO BOX
+===================================================== */
+
+.myzap-info {
+    background: linear-gradient(180deg, #0b1f3a, #081a30);
+    border: 1px solid #1e40af;
+    color: #bfdbfe;
+    border-radius: 10px;
+    font-size: 0.85rem;
+}
+
+.myzap-progress-track {
+    background-color: #0f172a;
+    border: 1px solid #334155;
+    height: 1.2rem;
+}
+
+#myzap-progress-bar {
+    font-weight: 700;
+    font-size: 0.72rem;
+}
+
+.ia-config-box {
+    background-color: #020617;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 14px;
+}
+
+/* =====================================================
+   STATUS CARD
+===================================================== */
+
+.myzap-status-card {
+    background-color: #020617;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 18px;
+}
+
+.status-indicator {
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: 0.3px;
+}
+
+.status-indicator.connected {
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: #ecfdf5;
+}
+
+.status-indicator.waiting {
+    background: linear-gradient(135deg, #facc15, #eab308);
+    color: #422006;
+}
+
+.status-indicator.disconnected {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    color: #fef2f2;
+}
+
+/* =====================================================
+   QR CODE
+===================================================== */
+
 .myzap-qrcode-card {
     background-color: #020617;
     border: 1px solid #1e293b;
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 12px;
+    border-radius: 14px;
+    padding: 18px;
 }
 
-/* ── INDICADOR DE STATUS ─────────────────────────────── */
-.status-indicator {
-    font-size: 0.9rem;
-    font-weight: 600;
-    padding: 8px 12px;
-    border-radius: 8px;
+.qrcode-box {
+    height: 260px;
+    border: 2px dashed #334155;
+    border-radius: 16px;
+    margin-top: 12px;
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+
+    background: radial-gradient(circle at center, #020617, #01030d);
+    transition: border-color 0.2s ease;
+}
+
+
+.qrcode-box img {
+    max-width: 85%;
+    max-height: 85%;
+    width: auto;
+    height: auto;
+
+    background: #ffffff;
+    padding: 10px;
+    border-radius: 12px;
+
+    box-shadow:
+        0 10px 25px rgba(0, 0, 0, 0.5),
+        inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+
+.qrcode-box .qrcode-hint {
+    font-size: 0.85rem;
+    color: #94a3b8;
     text-align: center;
 }
 
-.status-indicator.connected { color: #10b981; background-color: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); }
-.status-indicator.disconnected { color: #ef4444; background-color: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); }
-.status-indicator.waiting { color: #f59e0b; background-color: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); }
 
-/* ── QR CODE BOX ─────────────────────────────────────── */
-.qrcode-box {
-    min-height: 180px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px dashed #334155;
-    border-radius: 8px;
-    padding: 12px;
-    background-color: #0f172a;
-}
+/* =====================================================
+   LOADING OVERLAY
+===================================================== */
 
-.qrcode-box img { max-width: 100%; border-radius: 4px; }
-
-/* ── IA CONFIG BOX ───────────────────────────────────── */
-.ia-config-box {
-    background-color: #020617;
-    border: 1px solid #1e293b;
-    border-radius: 10px;
-    padding: 16px;
-}
-
-/* ── LOADING OVERLAY ─────────────────────────────────── */
 .myzap-loading-overlay {
     position: absolute;
     inset: 0;
     background: rgba(2, 6, 23, 0.85);
-    border-radius: 12px;
+    backdrop-filter: blur(4px);
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     z-index: 10;
+    border-radius: 16px;
 }
 
-/* ── ALERT INFO ─────────────────────────────────────── */
-.myzap-info { font-size: 0.85rem; background-color: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); color: #93c5fd; }
+.myzap-loading-overlay p {
+    font-size: 0.9rem;
+    color: #cbd5e1;
+}
 
-/* ── DROPDOWN MENU ───────────────────────────────────── */
-.dropdown-menu { background-color: #0f172a; border: 1px solid #1e293b; }
-.dropdown-item { color: #e5e7eb; }
-.dropdown-item:hover { background-color: #1e293b; color: #10b981; }
+/* =====================================================
+   RESPONSIVO
+===================================================== */
+
+@media (max-width: 992px) {
+    .myzap-grid {
+        grid-template-columns: 1fr;
+    }
+}
