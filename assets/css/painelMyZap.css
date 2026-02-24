@@ -296,6 +296,20 @@ body {
     color: #cbd5e1;
 }
 
+.config-debug-json {
+    background-color: #020617;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    color: #cbd5e1;
+    padding: 12px;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    max-height: 260px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* =====================================================
    RESPONSIVO
 ===================================================== */

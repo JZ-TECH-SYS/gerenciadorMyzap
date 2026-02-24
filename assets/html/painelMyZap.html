@@ -229,6 +229,24 @@
 
                         <div id="myzap-runtime-info" class="alert alert-secondary mt-3 mb-0"></div>
 
+                        <div class="mt-3">
+                            <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                                <strong>Debug API de configuracao</strong>
+                                <div class="d-flex gap-2 flex-wrap">
+                                    <button id="btn-config-debug-refresh" class="btn btn-sm btn-outline-info" type="button" onclick="carregarDebugConfigApi()">
+                                        Atualizar debug API
+                                    </button>
+                                    <button id="btn-config-debug-copy" class="btn btn-sm btn-outline-secondary" type="button" onclick="copiarDebugConfigApi()">
+                                        Copiar JSON
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="config-debug-meta" class="text-muted-small mt-2">
+                                Clique em "Atualizar debug API" para visualizar o retorno da API.
+                            </div>
+                            <pre id="config-debug-json" class="config-debug-json mt-2 mb-0">{}</pre>
+                        </div>
+
                         <div class="mt-4 d-flex gap-2 flex-wrap">
 
                             <button id="btn-start" class="btn btn-success" onclick="iniciarMyZapServico()">

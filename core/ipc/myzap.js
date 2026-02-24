@@ -13,6 +13,7 @@ const updateIaConfig = require('../myzap/api/updateIaConfig');
 const { iniciarMyZap } = require('../myzap/iniciarMyZap');
 const {
     prepareAutoConfig,
+    getAutoConfigDebugSnapshot,
     ensureMyZapReadyAndStart
 } = require('../myzap/autoConfig');
 const { resetMyZapEnvironment } = require('../myzap/resetEnvironment');
@@ -120,6 +121,23 @@ function registerMyZapHandlers(ipcMain) {
             return {
                 status: 'error',
                 message: error.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('myzap:getAutoConfigDebug', async () => {
+        try {
+            return getAutoConfigDebugSnapshot();
+        } catch (error) {
+            warn('Falha ao obter debug da configuracao automatica MyZap via IPC', {
+                metadata: { error }
+            });
+            return {
+                generatedAt: Date.now(),
+                success: false,
+                reason: 'ipc_error',
+                error: error.message || String(error),
+                attempts: []
             };
         }
     });

@@ -21,6 +21,7 @@ const STALE_PROGRESS_HIDE_MS = 15 * 60 * 1000;
 let myzapProgressPollTimer = null;
 let qrPollingTimer = null;
 let qrPollingAttempts = 0;
+let lastConfigDebugPayload = null;
 const QR_POLL_INTERVAL_MS = 3000;
 const QR_POLL_MAX_ATTEMPTS = 40; // ~120s total
 
@@ -235,6 +236,86 @@ function formatDateTimeBR(value) {
   return d.toLocaleString('pt-BR');
 }
 
+function buildConfigDebugMeta(debugSnapshot) {
+  const generatedAt = debugSnapshot?.generatedAt
+    ? new Date(debugSnapshot.generatedAt).toLocaleString('pt-BR')
+    : '-';
+  const attempts = Array.isArray(debugSnapshot?.attempts) ? debugSnapshot.attempts.length : 0;
+  const selectedEndpoint = debugSnapshot?.selectedEndpoint || 'nenhum';
+  const reason = debugSnapshot?.reason || '-';
+  const success = debugSnapshot?.success ? 'sim' : 'nao';
+
+  return `Gerado em: ${generatedAt} | sucesso: ${success} | tentativas: ${attempts} | endpoint vencedor: ${selectedEndpoint} | motivo: ${reason}`;
+}
+
+async function atualizarDebugConfigPainel(autoConfigResult = null) {
+  const meta = document.getElementById('config-debug-meta');
+  const pre = document.getElementById('config-debug-json');
+  if (!meta || !pre || !window.api?.getAutoConfigDebug) return;
+
+  try {
+    const debugSnapshot = await window.api.getAutoConfigDebug();
+    const payload = {
+      autoConfig: autoConfigResult
+        ? {
+          status: autoConfigResult?.status || null,
+          message: autoConfigResult?.message || null
+        }
+        : null,
+      debug: debugSnapshot
+    };
+
+    lastConfigDebugPayload = payload;
+    meta.textContent = buildConfigDebugMeta(debugSnapshot);
+    pre.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    meta.textContent = `Falha ao carregar debug: ${error?.message || error}`;
+    pre.textContent = '{}';
+  }
+}
+
+async function copiarDebugConfigApi() {
+  const meta = document.getElementById('config-debug-meta');
+  const text = JSON.stringify(lastConfigDebugPayload || {}, null, 2);
+
+  if (!navigator.clipboard?.writeText) {
+    if (meta) meta.textContent = 'Clipboard indisponivel neste ambiente.';
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    if (meta) meta.textContent = `${meta.textContent.split(' | ')[0]} | JSON copiado para a area de transferencia.`;
+  } catch (error) {
+    if (meta) meta.textContent = `Falha ao copiar JSON: ${error?.message || error}`;
+  }
+}
+
+async function carregarDebugConfigApi() {
+  const btn = document.getElementById('btn-config-debug-refresh');
+  const originalText = btn?.textContent || 'Atualizar debug API';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Atualizando...';
+  }
+
+  try {
+    const autoConfig = await window.api.prepareMyZapAutoConfig(true);
+    await atualizarDebugConfigPainel(autoConfig);
+  } catch (error) {
+    const meta = document.getElementById('config-debug-meta');
+    if (meta) {
+      meta.textContent = `Falha ao atualizar debug da API: ${error?.message || error}`;
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
 function renderRuntimeInfo({ modoIntegracao, lastSyncAt, remoteConfigOk = true }) {
   const box = document.getElementById('myzap-runtime-info');
   if (!box) return;
@@ -316,6 +397,7 @@ let configAutoRefreshTimer = null;
 
 async function refreshConfigFromApiAndRender() {
   const autoConfig = await window.api.prepareMyZapAutoConfig(true);
+  await atualizarDebugConfigPainel(autoConfig);
   if (autoConfig?.status === 'error') {
     setOnlineOnlyView(true, `Nao foi possivel consultar a rota de configuracao do MyZap agora: ${autoConfig?.message || 'erro desconhecido'}. Verifique API/Token/Empresa e tente novamente.`);
     await refreshMyZapProgress();
@@ -408,6 +490,7 @@ function startConfigAutoRefresh() {
 async function loadConfigs() {
   try {
     const autoConfig = await window.api.prepareMyZapAutoConfig(true);
+    await atualizarDebugConfigPainel(autoConfig);
     const remoteConfigOk = autoConfig?.status !== 'error';
     if (autoConfig?.status === 'error') {
       console.warn('Falha na prepara??o autom?tica do MyZap:', autoConfig?.message);
