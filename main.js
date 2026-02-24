@@ -30,7 +30,7 @@ const { registerMyZapHandlers } = require('./core/ipc/myzap');
 const { attachAutoUpdaterHandlers, checkForUpdates } = require('./core/updater');
 const { ensureMyZapReadyAndStart, refreshRemoteConfigAndSyncIa } = require('./core/myzap/autoConfig');
 const { clearProgress, getCurrentProgress } = require('./core/myzap/progress');
-const { killProcessesOnPort } = require('./core/myzap/processUtils');
+const { killProcessesOnPort, isPortInUse } = require('./core/myzap/processUtils');
 const { killMyZapProcess } = require('./core/myzap/iniciarMyZap');
 const deleteSession = require('./core/myzap/api/deleteSession');
 const { info: myzapInfo, warn: myzapWarn, error: myzapError } = require('./core/myzap/myzapLogger');
@@ -52,8 +52,10 @@ const store = new Store({
 
 let myzapConfigRefreshTimer = null;
 let queueAutoStartTimer = null;
+let myzapEnsureLoopTimer = null;
 let myzapManualUpdateInProgress = false;
 const MYZAP_CONFIG_REFRESH_MS = 30 * 1000;
+const MYZAP_ENSURE_LOOP_MS = 20 * 1000;
 
 function toast(msg) {
   new Notification({
@@ -81,6 +83,7 @@ function rebuildTrayMenu() {
 
 function applyMyZapRuntimeByMode() {
   if (isMyZapModoLocal()) {
+    scheduleMyZapEnsureLoop();
     scheduleQueueAutoStart();
     startMyzapStatusWatcher();
     startTokenSyncWatcher();
@@ -90,6 +93,11 @@ function applyMyZapRuntimeByMode() {
   if (queueAutoStartTimer) {
     clearInterval(queueAutoStartTimer);
     queueAutoStartTimer = null;
+  }
+
+  if (myzapEnsureLoopTimer) {
+    clearInterval(myzapEnsureLoopTimer);
+    myzapEnsureLoopTimer = null;
   }
 
   stopWhatsappQueueWatcher();
@@ -114,6 +122,40 @@ function applyMyZapRuntimeByMode() {
   myzapInfo('MyZap em modo web/online. Rotinas locais e processo MyZap foram desativados.', {
     metadata: { modo: getModoIntegracaoMyZap() }
   });
+}
+
+async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
+  if (!hasValidConfigMyZap()) {
+    return { status: 'skipped', reason: 'missing_base_config' };
+  }
+
+  if (store.get('myzap_userRemovedLocal') === true) {
+    return { status: 'skipped', reason: 'user_removed_local' };
+  }
+
+  if (!isMyZapModoLocal()) {
+    return { status: 'skipped', reason: 'mode_not_local' };
+  }
+
+  try {
+    const portaAtiva = await isPortInUse(5555);
+    if (portaAtiva) {
+      return { status: 'success', message: 'MyZap local ja ativo.' };
+    }
+
+    myzapInfo('MyZap auto-ensure: porta local fechada, tentando iniciar automaticamente', {
+      metadata: { trigger, modo: getModoIntegracaoMyZap() }
+    });
+
+    const result = await ensureMyZapReadyAndStart({ forceRemote: false });
+    applyMyZapRuntimeByMode();
+    return result;
+  } catch (err) {
+    myzapWarn('MyZap auto-ensure: erro ao validar/iniciar runtime local', {
+      metadata: { trigger, error: err?.message || String(err) }
+    });
+    return { status: 'error', message: err?.message || String(err) };
+  }
 }
 
 function toggleMyzap() {
@@ -209,7 +251,14 @@ async function autoStartMyZap() {
 
   try {
     myzapInfo('MyZap: iniciando fluxo automatico de preparacao/start...');
-    const result = await ensureMyZapReadyAndStart({ forceRemote: true });
+    let result = await ensureMyZapReadyAndStart({ forceRemote: true });
+
+    if (result?.status !== 'success') {
+      myzapWarn('MyZap: auto-start remoto falhou. Tentando fallback local com cache.', {
+        metadata: { result }
+      });
+      result = await ensureMyZapReadyAndStart({ forceRemote: false });
+    }
 
     if (result.status === 'success' && result?.skippedLocalStart) {
       toast('MyZap em modo web/online. Execucao local desativada.');
@@ -251,6 +300,9 @@ async function refreshMyZapConfigPeriodicamente() {
     }
 
     applyMyZapRuntimeByMode();
+    if (isMyZapModoLocal()) {
+      await ensureMyZapLocalRuntime('config_refresh');
+    }
   } catch (err) {
     myzapWarn('MyZap: erro na atualizacao remota periodica', {
       metadata: { error: err }
@@ -266,6 +318,28 @@ function scheduleMyZapConfigRefresh() {
   myzapConfigRefreshTimer = setInterval(() => {
     refreshMyZapConfigPeriodicamente();
   }, MYZAP_CONFIG_REFRESH_MS);
+}
+
+function scheduleMyZapEnsureLoop() {
+  if (myzapEnsureLoopTimer) {
+    return;
+  }
+
+  setTimeout(() => {
+    ensureMyZapLocalRuntime('startup_delay').catch((err) => {
+      myzapWarn('MyZap ensure-loop: erro na rodada inicial', {
+        metadata: { error: err?.message || String(err) }
+      });
+    });
+  }, 8000);
+
+  myzapEnsureLoopTimer = setInterval(() => {
+    ensureMyZapLocalRuntime('interval').catch((err) => {
+      myzapWarn('MyZap ensure-loop: erro no loop de garantia de start', {
+        metadata: { error: err?.message || String(err) }
+      });
+    });
+  }, MYZAP_ENSURE_LOOP_MS);
 }
 
 async function tryStartQueueWatcherAuto() {
@@ -359,6 +433,7 @@ app.whenReady().then(() => {
 
   autoStartMyZap();
   scheduleMyZapConfigRefresh();
+  scheduleMyZapEnsureLoop();
   handleUpdateCheck();
 });
 
@@ -373,6 +448,11 @@ app.on('before-quit', () => {
   if (queueAutoStartTimer) {
     clearInterval(queueAutoStartTimer);
     queueAutoStartTimer = null;
+  }
+
+  if (myzapEnsureLoopTimer) {
+    clearInterval(myzapEnsureLoopTimer);
+    myzapEnsureLoopTimer = null;
   }
 
   stopWhatsappQueueWatcher();
