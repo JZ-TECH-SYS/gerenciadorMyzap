@@ -54,6 +54,7 @@ let myzapConfigRefreshTimer = null;
 let queueAutoStartTimer = null;
 let myzapEnsureLoopTimer = null;
 let myzapManualUpdateInProgress = false;
+let lastKnownModoIntegracao = null;
 const MYZAP_CONFIG_REFRESH_MS = 30 * 1000;
 const MYZAP_ENSURE_LOOP_MS = 20 * 1000;
 
@@ -82,6 +83,10 @@ function rebuildTrayMenu() {
 }
 
 function applyMyZapRuntimeByMode() {
+  const modoAtual = getModoIntegracaoMyZap();
+  const modoMudou = lastKnownModoIntegracao !== null && lastKnownModoIntegracao !== modoAtual;
+  lastKnownModoIntegracao = modoAtual;
+
   if (isMyZapModoLocal()) {
     scheduleMyZapEnsureLoop();
     scheduleQueueAutoStart();
@@ -118,9 +123,11 @@ function applyMyZapRuntimeByMode() {
     killProcessesOnPort(5555);
   } catch (_e) { /* melhor esforco */ }
 
-  toast('MyZap alterado para modo web/online. Rotinas locais desativadas.');
+  if (modoMudou) {
+    toast('MyZap alterado para modo web/online. Rotinas locais desativadas.');
+  }
   myzapInfo('MyZap em modo web/online. Rotinas locais e processo MyZap foram desativados.', {
-    metadata: { modo: getModoIntegracaoMyZap() }
+    metadata: { modo: modoAtual }
   });
 }
 
@@ -261,7 +268,9 @@ async function autoStartMyZap() {
     }
 
     if (result.status === 'success' && result?.skippedLocalStart) {
-      toast('MyZap em modo web/online. Execucao local desativada.');
+      myzapInfo('MyZap em modo web/online. Execucao local desativada.', {
+        metadata: { modo: getModoIntegracaoMyZap() }
+      });
     } else if (result.status === 'success') {
       toast('Servico MyZap iniciado automaticamente');
     } else {
