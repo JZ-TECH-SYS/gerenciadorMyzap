@@ -713,7 +713,7 @@ async function checkRealConnection() {
     console.error('Erro ao verificar status real:', err);
 
     statusIndicator.className = 'status-indicator disconnected';
-    statusIndicator.textContent = 'âš  Erro de conexÃ£o';
+    statusIndicator.textContent = '⚠️ Erro de conexão';
 
     qrBox.innerHTML = `
       <span class="text-danger text-small">
@@ -788,7 +788,7 @@ async function checkConnection() {
     console.error('Erro ao verificar conexao:', err);
 
     statusIndicator.className = 'status-indicator disconnected';
-    statusIndicator.textContent = 'âš  Erro de conexÃ£o';
+    statusIndicator.textContent = '⚠️ Erro de conexão';
 
     qrBox.innerHTML = `
       <span class="text-danger text-small">
@@ -918,7 +918,7 @@ function startQrPolling() {
         if (isPayloadConnected(finalSnap)) {
           if (statusIndicator) {
             statusIndicator.className = 'status-indicator connected';
-            statusIndicator.textContent = '\u2705 Conectado';
+            statusIndicator.textContent = '✅ Conectado';
           }
           if (qrBox) qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
           setButtonsState({ canStart: false, canDelete: true });
@@ -957,7 +957,7 @@ async function iniciarSessao() {
     const realCheck = await checkRealConnection();
     if (realCheck?.isConnected || realCheck?.isQrWaiting) {
       statusIndicator.className = 'status-indicator waiting';
-      statusIndicator.textContent = 'âš  SessÃ£o jÃ¡ existe';
+      statusIndicator.textContent = '⚠️ Sessão já existe';
 
       setButtonsState({ canStart: false, canDelete: true });
       return;
@@ -986,7 +986,7 @@ async function iniciarSessao() {
     if (qrFromStart) {
       console.log('[MyZap UI] QR code recebido direto do startSession');
       statusIndicator.className = 'status-indicator waiting';
-      statusIndicator.textContent = '\u23F3 Aguardando leitura do QR Code';
+      statusIndicator.textContent = '⏳ Aguardando leitura do QR Code';
       qrBox.innerHTML = `
         <img src="${qrFromStart}" alt="QR Code WhatsApp"/>
         <div class="qrcode-hint">Escaneie o QR Code com o WhatsApp</div>
@@ -1069,7 +1069,7 @@ async function deletarSessao() {
     console.error('Erro ao deletar sessao:', err);
 
     statusIndicator.className = 'status-indicator disconnected';
-    statusIndicator.textContent = 'âš  Erro ao deletar sessÃ£o';
+    statusIndicator.textContent = '⚠️ Erro ao deletar sessão';
 
     qrBox.innerHTML = `
       <span class="text-danger text-small">

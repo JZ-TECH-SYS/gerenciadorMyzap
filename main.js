@@ -395,6 +395,11 @@ function scheduleQueueAutoStart() {
 attachAutoUpdaterHandlers(autoUpdater, { toast });
 
 app.whenReady().then(() => {
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    path: process.execPath,
+  });
+
   info('Aplicacao pronta para uso', {
     metadata: { ambiente: app.isPackaged ? 'producao' : 'desenvolvimento' }
   });
