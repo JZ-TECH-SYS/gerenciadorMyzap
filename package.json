@@ -1,7 +1,7 @@
 {
   "name": "gerenciador-myzap",
   "description": "Gerenciador MyZap — disparo automático de mensagens via WhatsApp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "main": "main.js",
   "author": {
     "name": "JZ-TECH-SYS",
@@ -41,7 +41,9 @@
     "nodemon": "^3.1.10"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron"]
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
   },
   "build": {
     "appId": "com.jvtech.myzap",
@@ -50,12 +52,17 @@
       "output": "dist"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.ico",
       "artifactName": "gerenciador-myzap-Setup-${version}.${ext}"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "assets/icon.png",
       "artifactName": "gerenciador-myzap-${version}.${ext}",
       "category": "Utility",
