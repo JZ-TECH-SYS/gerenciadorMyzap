@@ -190,7 +190,7 @@ async function iniciarMyZap(dirPath, options = {}) {
             dirPath,
             porta
         });
-        const abriuPorta = await aguardarPorta(porta, 20000, 500);
+        const abriuPorta = await aguardarPorta(porta, 180000, 1500);
 
         if (!abriuPorta) {
             transition('error', {

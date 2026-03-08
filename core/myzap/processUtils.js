@@ -1,6 +1,8 @@
 const { execSync, spawn } = require('child_process');
 const net = require('net');
 const os = require('os');
+const path = require('path');
+const fs = require('fs');
 
 function isPortInUse(port) {
     return new Promise((resolve) => {
@@ -178,13 +180,86 @@ function killProcessesOnPort(port) {
     };
 }
 
+/**
+ * Caminhos conhecidos de instalacao no Windows.
+ * Usado como fallback quando `where` falha (PATH desatualizado).
+ */
+const KNOWN_PATHS_WIN = {
+    git: [
+        path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'),
+        path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'),
+        path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'cmd', 'git.exe')
+    ],
+    node: [
+        path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
+        path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'nodejs', 'node.exe')
+    ]
+};
+
 function commandExists(command) {
     return new Promise((resolve) => {
         const checker = os.platform() === 'win32' ? 'where' : 'which';
         const child = spawn(checker, [command], { shell: false });
         child.on('error', () => resolve(false));
-        child.on('close', (code) => resolve(code === 0));
+        child.on('close', (code) => {
+            if (code === 0) return resolve(true);
+
+            // Fallback Windows: verificar caminhos conhecidos de instalacao
+            if (os.platform() === 'win32') {
+                const knownPaths = KNOWN_PATHS_WIN[command];
+                if (knownPaths) {
+                    for (const p of knownPaths) {
+                        try {
+                            if (fs.existsSync(p)) {
+                                const dir = path.dirname(p);
+                                if (!process.env.PATH.includes(dir)) {
+                                    process.env.PATH = `${dir};${process.env.PATH}`;
+                                }
+                                return resolve(true);
+                            }
+                        } catch (_e) { /* ignora */ }
+                    }
+                }
+            }
+            resolve(false);
+        });
     });
+}
+
+/**
+ * Atualiza o PATH do processo atual lendo o registro do Windows.
+ * Expande variaveis de ambiente (%SystemRoot%, %ProgramFiles% etc.)
+ */
+function refreshPathWindows() {
+    try {
+        const systemPath = execSync(
+            'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path',
+            { stdio: ['ignore', 'pipe', 'pipe'] }
+        ).toString();
+
+        const userPath = execSync(
+            'reg query "HKCU\\Environment" /v Path',
+            { stdio: ['ignore', 'pipe', 'pipe'] }
+        ).toString();
+
+        const extractValue = (regOutput) => {
+            const match = regOutput.match(/REG_(?:EXPAND_)?SZ\s+(.+)/i);
+            return match ? match[1].trim() : '';
+        };
+
+        const expandVars = (str) => str.replace(/%([^%]+)%/g, (_, varName) => {
+            return process.env[varName] || `%${varName}%`;
+        });
+
+        const newPathStr = [extractValue(systemPath), extractValue(userPath)]
+            .filter(Boolean)
+            .map(expandVars)
+            .join(';');
+
+        if (newPathStr) {
+            process.env.PATH = newPathStr;
+        }
+    } catch (_err) { /* melhor esforco */ }
 }
 
 async function getPnpmCommand() {
@@ -209,5 +284,6 @@ module.exports = {
     isPortInUse,
     killProcessesOnPort,
     commandExists,
-    getPnpmCommand
+    getPnpmCommand,
+    refreshPathWindows
 };

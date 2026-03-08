@@ -9,6 +9,10 @@ const {
   ipcMain
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
+
+// Desabilita aceleracao por hardware — previne crashes nativos do GPU
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('disable-gpu-compositing');
 const path = require('path');
 const Store = require('electron-store');
 const { info, warn, error, abrirPastaLogs } = require('./core/utils/logger');
@@ -147,6 +151,12 @@ async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
   try {
     const portaAtiva = await isPortInUse(5555);
     if (portaAtiva) {
+      // Garante que a state machine reflete o estado real (ex: porta subiu
+      // apos timeout anterior ter marcado 'error')
+      const { getState, forceTransition } = require('./core/myzap/stateMachine');
+      if (getState() !== 'running') {
+        forceTransition('running', { message: 'MyZap local ativo (detectado via porta 5555).', porta: 5555 });
+      }
       return { status: 'success', message: 'MyZap local ja ativo.' };
     }
 
@@ -531,13 +541,63 @@ ipcMain.on('myzap-settings-saved', async (_e, {
 });
 
 process.on('uncaughtException', (err) => {
+  // Log sincrono de emergencia — sobrevive a crash
+  const fsCrash = require('fs');
+  const osCrash = require('os');
+  const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
+  try {
+    if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
+    const crashLine = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'CRASH',
+      type: 'uncaughtException',
+      message: err?.message || String(err),
+      stack: err?.stack || 'sem stack',
+      pid: process.pid
+    }) + osCrash.EOL;
+    fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), crashLine, 'utf8');
+  } catch (_e) { /* melhor esforco */ }
+
   error('uncaughtException', {
-    metadata: { error: err }
+    metadata: { error: err, stack: err?.stack }
   });
 });
 
 process.on('unhandledRejection', (reason) => {
+  const fsCrash = require('fs');
+  const osCrash = require('os');
+  const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
+  try {
+    if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
+    const crashLine = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'CRASH',
+      type: 'unhandledRejection',
+      message: reason?.message || String(reason),
+      stack: reason?.stack || 'sem stack',
+      pid: process.pid
+    }) + osCrash.EOL;
+    fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), crashLine, 'utf8');
+  } catch (_e) { /* melhor esforco */ }
+
   error('unhandledRejection', {
-    metadata: { error: reason }
+    metadata: { error: reason, stack: reason?.stack }
   });
+});
+
+process.on('exit', (code) => {
+  const fsCrash = require('fs');
+  const osCrash = require('os');
+  const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
+  try {
+    if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
+    const exitLine = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'EXIT',
+      type: 'process_exit',
+      code,
+      pid: process.pid
+    }) + osCrash.EOL;
+    fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), exitLine, 'utf8');
+  } catch (_e) { /* melhor esforco */ }
 });
