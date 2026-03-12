@@ -2,20 +2,40 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <title>Logs — Gerenciador MyZap</title>
+    <title>Logs - Gerenciador MyZap</title>
     <link rel="stylesheet" href="../css/logs.css" />
   </head>
   <body>
-    <header>
-      <label for="logFile">📄 Selecionar log</label>
-      <select id="logFile"></select>
+    <header class="toolbar">
+      <div class="toolbar-row toolbar-row-main">
+        <div class="field-group file-group">
+          <label for="logFile">Arquivo de log</label>
+          <select id="logFile"></select>
+        </div>
+        <div class="toolbar-actions">
+          <button id="togglePolling" type="button" class="toolbar-button">Pausar</button>
+          <button id="refreshNow" type="button" class="toolbar-button toolbar-button-secondary">Atualizar</button>
+          <button id="copyLog" type="button" class="toolbar-button toolbar-button-secondary">Copiar visivel</button>
+        </div>
+      </div>
+
+      <div class="toolbar-row">
+        <div class="field-group search-group">
+          <label for="search">Buscar no log</label>
+          <input id="search" type="search" placeholder="Filtrar mensagem, area ou metadata" />
+        </div>
+        <div class="status-panel">
+          <span id="liveStatus" class="live-status">Ao vivo</span>
+          <span id="resultCount" class="result-count">0 registros</span>
+        </div>
+      </div>
+
       <div class="filters">
         <label><input type="checkbox" value="error" checked /> Erro</label>
         <label><input type="checkbox" value="warn" checked /> Aviso</label>
         <label><input type="checkbox" value="info" checked /> Info</label>
         <label><input type="checkbox" value="debug" checked /> Debug</label>
       </div>
-      <input id="search" type="search" placeholder="Filtrar mensagem ou área" />
     </header>
 
     <div id="logContent" class="log-panel">Carregando...</div>

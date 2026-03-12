@@ -324,6 +324,50 @@
                                     placeholder="Token do serviço de email (opcional)" />
                             </div>
 
+                            <div class="mb-3">
+                                <h6 class="fw-semibold mb-2">Features opcionais do backend</h6>
+                                <p class="text-muted small mb-3">
+                                    Use <strong>Automático</strong> para o worker decidir pela resposta da API e pela detecção local. Os overrides abaixo vencem a inferência automática.
+                                </p>
+                                <div id="capability-summary" class="alert alert-secondary small mb-3">
+                                    Carregando capabilities...
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Configuração de IA</label>
+                                        <select id="capability-ia-config-mode" class="form-select">
+                                            <option value="auto">Automático</option>
+                                            <option value="enabled">Habilitado</option>
+                                            <option value="disabled">Desabilitado</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Sync de tokens</label>
+                                        <select id="capability-token-sync-mode" class="form-select">
+                                            <option value="auto">Automático</option>
+                                            <option value="enabled">Habilitado</option>
+                                            <option value="disabled">Desabilitado</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Status passivo</label>
+                                        <select id="capability-passive-status-mode" class="form-select">
+                                            <option value="auto">Automático</option>
+                                            <option value="enabled">Habilitado</option>
+                                            <option value="disabled">Desabilitado</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Polling da fila</label>
+                                        <select id="capability-queue-polling-mode" class="form-select">
+                                            <option value="auto">Automático</option>
+                                            <option value="enabled">Habilitado</option>
+                                            <option value="disabled">Desabilitado</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div class="d-flex gap-2 flex-wrap">
                                 <button type="submit" id="btn-save-config" class="btn btn-success">
                                     Salvar Configurações

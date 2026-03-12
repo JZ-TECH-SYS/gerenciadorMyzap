@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { contextBridge } = require('electron');
+const { clipboard, contextBridge } = require('electron');
 const { getLogDir } = require('../../core/utils/logger');
 
 const LOG_DIR = getLogDir();
@@ -92,5 +92,8 @@ function matchesFilters(line, levelFilters, search, isJson) {
 
 contextBridge.exposeInMainWorld('logViewer', {
   listLogFiles,
-  readLogTail
+  readLogTail,
+  copyText(text = '') {
+    clipboard.writeText(String(text));
+  }
 });

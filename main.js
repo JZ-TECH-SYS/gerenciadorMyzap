@@ -4,6 +4,7 @@ if (process.platform !== 'win32') {
 
 const {
   app,
+  BrowserWindow,
   Menu,
   Notification,
   ipcMain
@@ -16,15 +17,23 @@ app.commandLine.appendSwitch('disable-gpu-compositing');
 const path = require('path');
 const Store = require('electron-store');
 const { info, warn, error, abrirPastaLogs } = require('./core/utils/logger');
-const { startWhatsappQueueWatcher, stopWhatsappQueueWatcher } = require('./core/api/whatsappQueueWatcher');
+const {
+  startWhatsappQueueWatcher,
+  stopWhatsappQueueWatcher,
+  getWhatsappQueueWatcherStatus
+} = require('./core/api/whatsappQueueWatcher');
 const {
   startMyzapStatusWatcher,
   stopMyzapStatusWatcher,
   enviarStatusMyZap,
-  isMyzapWatcherAtivo,
+  getMyzapStatusWatcherInfo,
   setTrayCallback
 } = require('./core/api/myzapStatusWatcher');
-const { startTokenSyncWatcher, stopTokenSyncWatcher } = require('./core/api/tokenSyncWatcher');
+const {
+  startTokenSyncWatcher,
+  stopTokenSyncWatcher,
+  getTokenSyncWatcherStatus
+} = require('./core/api/tokenSyncWatcher');
 const { createSettings } = require('./core/windows/settings');
 const { openLogViewer } = require('./core/windows/logViewer');
 const { createPainelMyZap } = require('./core/windows/painelMyZap');
@@ -33,6 +42,14 @@ const trayManager = require('./core/windows/tray');
 const { registerMyZapHandlers } = require('./core/ipc/myzap');
 const { attachAutoUpdaterHandlers, checkForUpdates } = require('./core/updater');
 const { ensureMyZapReadyAndStart, refreshRemoteConfigAndSyncIa } = require('./core/myzap/autoConfig');
+const {
+  buildBackendProfileKey,
+  clearDerivedBackendState,
+  isCapabilityEnabled,
+  getCapabilityEntry,
+  getCapabilitySnapshotPayload,
+  saveCapabilityPreferences
+} = require('./core/myzap/capabilities');
 const { clearProgress, getCurrentProgress } = require('./core/myzap/progress');
 const { killProcessesOnPort, isPortInUse } = require('./core/myzap/processUtils');
 const { killMyZapProcess } = require('./core/myzap/iniciarMyZap');
@@ -40,6 +57,9 @@ const deleteSession = require('./core/myzap/api/deleteSession');
 const { info: myzapInfo, warn: myzapWarn, error: myzapError } = require('./core/myzap/myzapLogger');
 
 Menu.setApplicationMenu(null);
+
+const AUTO_LAUNCH_ARGS = ['--autostart'];
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 const store = new Store({
   defaults: {
@@ -50,7 +70,11 @@ const store = new Store({
     myzap_sessionKey: '',
     myzap_sessionName: '',
     myzap_apiToken: '',
-    myzap_envContent: ''
+    myzap_envContent: '',
+    myzap_capabilityIaConfigMode: 'auto',
+    myzap_capabilityTokenSyncMode: 'auto',
+    myzap_capabilityPassiveStatusMode: 'auto',
+    myzap_capabilityQueuePollingMode: 'auto'
   }
 });
 
@@ -86,28 +110,200 @@ function rebuildTrayMenu() {
   trayManager.rebuildMenu();
 }
 
-function applyMyZapRuntimeByMode() {
+function focusExistingWindow() {
+  const targetWindow = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed());
+  if (!targetWindow) {
+    return false;
+  }
+
+  if (targetWindow.isMinimized()) {
+    targetWindow.restore();
+  }
+
+  targetWindow.show();
+  targetWindow.focus();
+  return true;
+}
+
+function showPrimaryInstance() {
+  if (focusExistingWindow()) {
+    return;
+  }
+
+  if (!hasValidConfigMyZap()) {
+    createSettings();
+    return;
+  }
+
+  createPainelMyZap();
+}
+
+function handleSecondInstanceLaunch() {
+  const revealPrimaryInstance = () => {
+    info('Nova execucao detectada; mantendo apenas a instancia principal.', {
+      metadata: { pid: process.pid }
+    });
+    showPrimaryInstance();
+    toast('Gerenciador MyZap ja esta em execucao');
+  };
+
+  if (app.isReady()) {
+    revealPrimaryInstance();
+    return;
+  }
+
+  app.whenReady().then(revealPrimaryInstance).catch(() => {});
+}
+
+function configureAutoLaunch() {
+  if (!app.isPackaged) {
+    info('Inicializacao com o sistema ignorada em ambiente de desenvolvimento.', {
+      metadata: { platform: process.platform, execPath: process.execPath }
+    });
+    return;
+  }
+
+  if (!['win32', 'darwin'].includes(process.platform)) {
+    warn('Inicializacao com o sistema nao suportada nesta plataforma via Electron.', {
+      metadata: { platform: process.platform }
+    });
+    return;
+  }
+
+  const loginItemSettings = {
+    openAtLogin: true
+  };
+
+  if (process.platform === 'win32') {
+    loginItemSettings.path = process.execPath;
+    loginItemSettings.args = AUTO_LAUNCH_ARGS;
+    loginItemSettings.enabled = true;
+  } else if (process.platform === 'darwin') {
+    loginItemSettings.openAsHidden = true;
+  }
+
+  app.setLoginItemSettings(loginItemSettings);
+
+  const currentLoginItemSettings = process.platform === 'win32'
+    ? app.getLoginItemSettings({ path: process.execPath, args: AUTO_LAUNCH_ARGS })
+    : app.getLoginItemSettings();
+
+  const autoLaunchEnabled = process.platform === 'win32'
+    ? Boolean(
+      currentLoginItemSettings.openAtLogin
+        || currentLoginItemSettings.executableWillLaunchAtLogin
+    )
+    : Boolean(currentLoginItemSettings.openAtLogin);
+
+  if (autoLaunchEnabled) {
+    info('Inicializacao automatica com o sistema operacional habilitada.', {
+      metadata: { platform: process.platform, execPath: process.execPath }
+    });
+    return;
+  }
+
+  warn('Nao foi possivel confirmar a inicializacao automatica com o sistema operacional.', {
+    metadata: {
+      platform: process.platform,
+      execPath: process.execPath,
+      loginItemSettings: currentLoginItemSettings
+    }
+  });
+}
+
+function getCapabilityMetadata(capability) {
+  return getCapabilityEntry(capability, store) || null;
+}
+
+function isMyZapServiceAtivo() {
+  return Boolean(
+    getMyzapStatusWatcherInfo().ativo
+    || getTokenSyncWatcherStatus().ativo
+    || getWhatsappQueueWatcherStatus().ativo
+  );
+}
+
+function clearQueueAutoStartTimer() {
+  if (queueAutoStartTimer) {
+    clearInterval(queueAutoStartTimer);
+    queueAutoStartTimer = null;
+  }
+}
+
+function clearMyZapEnsureLoopTimer() {
+  if (myzapEnsureLoopTimer) {
+    clearInterval(myzapEnsureLoopTimer);
+    myzapEnsureLoopTimer = null;
+  }
+}
+
+function maybeLogCapabilityIgnored(capability, trigger) {
+  if (trigger === 'config_refresh') {
+    return;
+  }
+
+  const labels = {
+    supportsPassiveStatus: 'status passivo',
+    supportsTokenSync: 'sync de tokens',
+    supportsQueuePolling: 'polling da fila'
+  };
+
+  myzapInfo(`MyZap: ${labels[capability] || capability} ignorado por nao suportado/desabilitado.`, {
+    metadata: {
+      trigger,
+      capability: getCapabilityMetadata(capability)
+    }
+  });
+}
+
+function applyOptionalWatchersByCapabilities(trigger = 'runtime_apply') {
+  const supportsPassiveStatus = isCapabilityEnabled('supportsPassiveStatus', store);
+  const supportsTokenSync = isCapabilityEnabled('supportsTokenSync', store);
+  const supportsQueuePolling = isCapabilityEnabled('supportsQueuePolling', store);
+
+  if (supportsPassiveStatus) {
+    startMyzapStatusWatcher();
+  } else {
+    if (trigger !== 'config_refresh' || getMyzapStatusWatcherInfo().ativo) {
+      maybeLogCapabilityIgnored('supportsPassiveStatus', trigger);
+    }
+    stopMyzapStatusWatcher();
+  }
+
+  if (supportsTokenSync) {
+    startTokenSyncWatcher();
+  } else {
+    if (trigger !== 'config_refresh' || getTokenSyncWatcherStatus().ativo) {
+      maybeLogCapabilityIgnored('supportsTokenSync', trigger);
+    }
+    stopTokenSyncWatcher();
+  }
+
+  if (supportsQueuePolling) {
+    scheduleQueueAutoStart();
+  } else {
+    if (trigger !== 'config_refresh' || queueAutoStartTimer || getWhatsappQueueWatcherStatus().ativo) {
+      maybeLogCapabilityIgnored('supportsQueuePolling', trigger);
+    }
+    clearQueueAutoStartTimer();
+    stopWhatsappQueueWatcher();
+  }
+}
+
+function applyMyZapRuntimeByMode(trigger = 'runtime_apply') {
   const modoAtual = getModoIntegracaoMyZap();
   const modoMudou = lastKnownModoIntegracao !== null && lastKnownModoIntegracao !== modoAtual;
   lastKnownModoIntegracao = modoAtual;
 
   if (isMyZapModoLocal()) {
     scheduleMyZapEnsureLoop();
-    scheduleQueueAutoStart();
-    startMyzapStatusWatcher();
-    startTokenSyncWatcher();
+    applyOptionalWatchersByCapabilities(trigger);
+    rebuildTrayMenu();
     return;
   }
 
-  if (queueAutoStartTimer) {
-    clearInterval(queueAutoStartTimer);
-    queueAutoStartTimer = null;
-  }
-
-  if (myzapEnsureLoopTimer) {
-    clearInterval(myzapEnsureLoopTimer);
-    myzapEnsureLoopTimer = null;
-  }
+  clearQueueAutoStartTimer();
+  clearMyZapEnsureLoopTimer();
 
   stopWhatsappQueueWatcher();
   stopMyzapStatusWatcher();
@@ -133,6 +329,7 @@ function applyMyZapRuntimeByMode() {
   myzapInfo('MyZap em modo web/online. Rotinas locais e processo MyZap foram desativados.', {
     metadata: { modo: modoAtual }
   });
+  rebuildTrayMenu();
 }
 
 async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
@@ -165,7 +362,7 @@ async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
     });
 
     const result = await ensureMyZapReadyAndStart({ forceRemote: false });
-    applyMyZapRuntimeByMode();
+    applyMyZapRuntimeByMode(trigger);
     return result;
   } catch (err) {
     myzapWarn('MyZap auto-ensure: erro ao validar/iniciar runtime local', {
@@ -176,7 +373,8 @@ async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
 }
 
 function toggleMyzap() {
-  if (isMyzapWatcherAtivo()) {
+  if (isMyZapServiceAtivo()) {
+    clearQueueAutoStartTimer();
     stopWhatsappQueueWatcher();
     stopMyzapStatusWatcher();
     stopTokenSyncWatcher();
@@ -185,11 +383,7 @@ function toggleMyzap() {
       metadata: { status: 'parado' }
     });
   } else {
-    startMyzapStatusWatcher();
-    startTokenSyncWatcher();
-    if (isMyZapModoLocal()) {
-      tryStartQueueWatcherAuto();
-    }
+    applyMyZapRuntimeByMode('manual_toggle_start');
     toast('Servico MyZap iniciado');
     info('Servico MyZap iniciado via toggle', {
       metadata: { status: 'iniciado' }
@@ -220,7 +414,7 @@ async function updateMyZapNow() {
 
   try {
     const result = await ensureMyZapReadyAndStart({ forceRemote: true });
-    applyMyZapRuntimeByMode();
+    applyMyZapRuntimeByMode('manual_update');
 
     if (result?.status === 'success' && result?.skippedLocalStart) {
       toast('Modo web/online ativo. Atualizacao local ignorada.');
@@ -287,7 +481,7 @@ async function autoStartMyZap() {
       myzapError('MyZap: falha no fluxo automatico de start', { metadata: { result } });
     }
 
-    applyMyZapRuntimeByMode();
+    applyMyZapRuntimeByMode('auto_start');
   } catch (err) {
     myzapError('MyZap: erro critico no auto-start', { metadata: { error: err } });
   }
@@ -318,7 +512,7 @@ async function refreshMyZapConfigPeriodicamente() {
       }
     }
 
-    applyMyZapRuntimeByMode();
+    applyMyZapRuntimeByMode('config_refresh');
     if (isMyZapModoLocal()) {
       await ensureMyZapLocalRuntime('config_refresh');
     }
@@ -366,6 +560,18 @@ async function tryStartQueueWatcherAuto() {
     return true;
   }
 
+  if (!isCapabilityEnabled('supportsQueuePolling', store)) {
+    myzapInfo('Watcher da fila MyZap ignorado por nao suportado/desabilitado', {
+      metadata: {
+        trigger: 'auto_queue_start',
+        capability: getCapabilityMetadata('supportsQueuePolling')
+      }
+    });
+    clearQueueAutoStartTimer();
+    stopWhatsappQueueWatcher();
+    return true;
+  }
+
   try {
     const result = await startWhatsappQueueWatcher();
     if (result?.status === 'success') {
@@ -392,212 +598,238 @@ async function tryStartQueueWatcherAuto() {
 }
 
 function scheduleQueueAutoStart() {
+  if (!isCapabilityEnabled('supportsQueuePolling', store)) {
+    clearQueueAutoStartTimer();
+    stopWhatsappQueueWatcher();
+    return;
+  }
+
   if (queueAutoStartTimer) {
     return;
   }
 
-  tryStartQueueWatcherAuto();
   queueAutoStartTimer = setInterval(() => {
     tryStartQueueWatcherAuto();
   }, 30000);
+  tryStartQueueWatcherAuto();
 }
 
-attachAutoUpdaterHandlers(autoUpdater, { toast });
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', handleSecondInstanceLaunch);
 
-app.whenReady().then(() => {
-  app.setLoginItemSettings({
-    openAtLogin: true,
-    path: process.execPath,
-  });
+  attachAutoUpdaterHandlers(autoUpdater, { toast });
 
-  info('Aplicacao pronta para uso', {
-    metadata: { ambiente: app.isPackaged ? 'producao' : 'desenvolvimento' }
-  });
+  app.whenReady().then(() => {
+    configureAutoLaunch();
 
-  trayManager.init(
-    path.join(__dirname, 'assets/icon.png'),
-    {
-      createSettings,
-      toggleMyzap,
-      updateMyZapNow,
-      createPainelMyZap,
-      createFilaMyZap,
-      openLogViewer,
-      abrirPastaLogs,
-      checkUpdates: handleUpdateCheck
-    },
-    app.getVersion(),
-    isMyzapWatcherAtivo
-  );
-
-  setTrayCallback(rebuildTrayMenu);
-  rebuildTrayMenu();
-
-  if (!hasValidConfigMyZap()) {
-    warn('Configuracao da API ausente no startup', {
-      metadata: {
-        apiUrl: !!store.get('apiUrl'),
-        apiToken: !!store.get('apiToken'),
-        idempresa: !!store.get('idempresa')
-      }
+    info('Aplicacao pronta para uso', {
+      metadata: { ambiente: app.isPackaged ? 'producao' : 'desenvolvimento' }
     });
-    toast('Configure a API do MyZap antes de iniciar');
-    createSettings();
-  }
 
-  try {
-    const progress = getCurrentProgress();
-    if (progress && progress.active) {
-      myzapWarn('Progresso stale detectado na inicializacao, limpando', {
-        metadata: { progress }
+    trayManager.init(
+      path.join(__dirname, 'assets/icon.png'),
+      {
+        createSettings,
+        toggleMyzap,
+        updateMyZapNow,
+        createPainelMyZap,
+        createFilaMyZap,
+        openLogViewer,
+        abrirPastaLogs,
+        checkUpdates: handleUpdateCheck
+      },
+      app.getVersion(),
+      isMyZapServiceAtivo
+    );
+
+    setTrayCallback(rebuildTrayMenu);
+    rebuildTrayMenu();
+
+    if (!hasValidConfigMyZap()) {
+      warn('Configuracao da API ausente no startup', {
+        metadata: {
+          apiUrl: !!store.get('apiUrl'),
+          apiToken: !!store.get('apiToken'),
+          idempresa: !!store.get('idempresa')
+        }
       });
-      clearProgress();
+      toast('Configure a API do MyZap antes de iniciar');
+      createSettings();
     }
-  } catch (_e) { /* melhor esforco */ }
 
-  autoStartMyZap();
-  scheduleMyZapConfigRefresh();
-  scheduleMyZapEnsureLoop();
-  handleUpdateCheck();
-});
+    try {
+      const progress = getCurrentProgress();
+      if (progress && progress.active) {
+        myzapWarn('Progresso stale detectado na inicializacao, limpando', {
+          metadata: { progress }
+        });
+        clearProgress();
+      }
+    } catch (_e) { /* melhor esforco */ }
 
-app.on('window-all-closed', (e) => e.preventDefault());
-
-app.on('before-quit', () => {
-  if (myzapConfigRefreshTimer) {
-    clearInterval(myzapConfigRefreshTimer);
-    myzapConfigRefreshTimer = null;
-  }
-
-  if (queueAutoStartTimer) {
-    clearInterval(queueAutoStartTimer);
-    queueAutoStartTimer = null;
-  }
-
-  if (myzapEnsureLoopTimer) {
-    clearInterval(myzapEnsureLoopTimer);
-    myzapEnsureLoopTimer = null;
-  }
-
-  stopWhatsappQueueWatcher();
-  stopMyzapStatusWatcher();
-  stopTokenSyncWatcher();
-});
-
-ipcMain.handle('settings:get', (_e, key) => store.get(key));
-registerMyZapHandlers(ipcMain);
-
-ipcMain.on('settings-saved', async (_e, { idempresa, apiUrl, apiToken }) => {
-  info('Configuracoes da API salvas pelo usuario', {
-    metadata: { idempresa, apiUrl }
+    autoStartMyZap();
+    scheduleMyZapConfigRefresh();
+    handleUpdateCheck();
   });
 
-  store.set({ idempresa, apiUrl, apiToken });
-  await autoStartMyZap();
-});
+  app.on('window-all-closed', (e) => e.preventDefault());
 
-ipcMain.on('myzap-settings-saved', async (_e, {
-  myzap_diretorio,
-  myzap_sessionKey,
-  myzap_apiToken,
-  myzap_envContent,
-  clickexpress_apiUrl,
-  clickexpress_queueToken
-}) => {
-  myzapInfo('Configuracoes do painel MyZap salvas pelo usuario', {
-    metadata: {
-      myzap_diretorio,
-      myzap_sessionKey,
-      myzap_apiToken,
-      myzap_envContent,
-      clickexpress_apiUrl: !!clickexpress_apiUrl,
-      clickexpress_queueToken: !!clickexpress_queueToken
+  app.on('before-quit', () => {
+    if (myzapConfigRefreshTimer) {
+      clearInterval(myzapConfigRefreshTimer);
+      myzapConfigRefreshTimer = null;
     }
+
+    clearQueueAutoStartTimer();
+    clearMyZapEnsureLoopTimer();
+
+    stopWhatsappQueueWatcher();
+    stopMyzapStatusWatcher();
+    stopTokenSyncWatcher();
   });
 
-  store.set({
+  ipcMain.handle('settings:get', (_e, key) => store.get(key));
+  ipcMain.handle('myzap:getCapabilitySnapshot', () => getCapabilitySnapshotPayload(store));
+  ipcMain.handle('myzap:saveCapabilityPreferences', async (_e, preferences = {}) => {
+    const result = saveCapabilityPreferences(preferences, store);
+    applyMyZapRuntimeByMode('preferences_saved');
+    rebuildTrayMenu();
+    return result;
+  });
+  registerMyZapHandlers(ipcMain);
+
+  ipcMain.on('settings-saved', async (_e, { idempresa, apiUrl, apiToken }) => {
+    info('Configuracoes da API salvas pelo usuario', {
+      metadata: { idempresa, apiUrl }
+    });
+
+    const previousBackendProfileKey = buildBackendProfileKey({
+      apiUrl: store.get('apiUrl'),
+      idempresa: store.get('idempresa')
+    });
+    const nextBackendProfileKey = buildBackendProfileKey({ apiUrl, idempresa });
+
+    if (previousBackendProfileKey && nextBackendProfileKey && previousBackendProfileKey !== nextBackendProfileKey) {
+      myzapInfo('MyZap: backend/API da empresa alterado. Limpando cache remoto derivado.', {
+        metadata: {
+          previousBackendProfileKey,
+          nextBackendProfileKey
+        }
+      });
+      clearDerivedBackendState(store);
+    }
+
+    store.set({ idempresa, apiUrl, apiToken, myzap_backendProfileKey: nextBackendProfileKey });
+    await autoStartMyZap();
+  });
+
+  ipcMain.on('myzap-settings-saved', async (_e, {
     myzap_diretorio,
     myzap_sessionKey,
-    myzap_sessionName: myzap_sessionKey,
     myzap_apiToken,
     myzap_envContent,
     clickexpress_apiUrl,
     clickexpress_queueToken
-  });
-
-  const result = await ensureMyZapReadyAndStart({ forceRemote: true });
-  if (result.status === 'success') {
-    toast('MyZap: configuracoes atualizadas automaticamente!');
-  }
-
-  applyMyZapRuntimeByMode();
-  if (isMyZapModoLocal()) {
-    enviarStatusMyZap().catch((err) => {
-      myzapWarn('Falha ao enviar status passivo do MyZap apos salvar configuracoes', {
-        metadata: { error: err }
-      });
+  }) => {
+    myzapInfo('Configuracoes do painel MyZap salvas pelo usuario', {
+      metadata: {
+        myzap_diretorio,
+        myzap_sessionKey,
+        myzap_apiToken,
+        myzap_envContent,
+        clickexpress_apiUrl: !!clickexpress_apiUrl,
+        clickexpress_queueToken: !!clickexpress_queueToken
+      }
     });
-  }
-});
 
-process.on('uncaughtException', (err) => {
-  // Log sincrono de emergencia — sobrevive a crash
-  const fsCrash = require('fs');
-  const osCrash = require('os');
-  const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
-  try {
-    if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
-    const crashLine = JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'CRASH',
-      type: 'uncaughtException',
-      message: err?.message || String(err),
-      stack: err?.stack || 'sem stack',
-      pid: process.pid
-    }) + osCrash.EOL;
-    fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), crashLine, 'utf8');
-  } catch (_e) { /* melhor esforco */ }
+    store.set({
+      myzap_diretorio,
+      myzap_sessionKey,
+      myzap_sessionName: myzap_sessionKey,
+      myzap_apiToken,
+      myzap_envContent,
+      myzap_backendApiUrl: clickexpress_apiUrl,
+      myzap_backendApiToken: clickexpress_queueToken,
+      clickexpress_apiUrl,
+      clickexpress_queueToken
+    });
 
-  error('uncaughtException', {
-    metadata: { error: err, stack: err?.stack }
+    const result = await ensureMyZapReadyAndStart({ forceRemote: true });
+    if (result.status === 'success') {
+      toast('MyZap: configuracoes atualizadas automaticamente!');
+    }
+
+    applyMyZapRuntimeByMode('panel_manual_save');
+    if (isMyZapModoLocal()) {
+      enviarStatusMyZap().catch((err) => {
+        myzapWarn('Falha ao enviar status passivo do MyZap apos salvar configuracoes', {
+          metadata: { error: err }
+        });
+      });
+    }
   });
-});
 
-process.on('unhandledRejection', (reason) => {
-  const fsCrash = require('fs');
-  const osCrash = require('os');
-  const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
-  try {
-    if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
-    const crashLine = JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'CRASH',
-      type: 'unhandledRejection',
-      message: reason?.message || String(reason),
-      stack: reason?.stack || 'sem stack',
-      pid: process.pid
-    }) + osCrash.EOL;
-    fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), crashLine, 'utf8');
-  } catch (_e) { /* melhor esforco */ }
+  process.on('uncaughtException', (err) => {
+    // Log sincrono de emergencia — sobrevive a crash
+    const fsCrash = require('fs');
+    const osCrash = require('os');
+    const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
+    try {
+      if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
+      const crashLine = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'CRASH',
+        type: 'uncaughtException',
+        message: err?.message || String(err),
+        stack: err?.stack || 'sem stack',
+        pid: process.pid
+      }) + osCrash.EOL;
+      fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), crashLine, 'utf8');
+    } catch (_e) { /* melhor esforco */ }
 
-  error('unhandledRejection', {
-    metadata: { error: reason, stack: reason?.stack }
+    error('uncaughtException', {
+      metadata: { error: err, stack: err?.stack }
+    });
   });
-});
 
-process.on('exit', (code) => {
-  const fsCrash = require('fs');
-  const osCrash = require('os');
-  const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
-  try {
-    if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
-    const exitLine = JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'EXIT',
-      type: 'process_exit',
-      code,
-      pid: process.pid
-    }) + osCrash.EOL;
-    fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), exitLine, 'utf8');
-  } catch (_e) { /* melhor esforco */ }
-});
+  process.on('unhandledRejection', (reason) => {
+    const fsCrash = require('fs');
+    const osCrash = require('os');
+    const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
+    try {
+      if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
+      const crashLine = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'CRASH',
+        type: 'unhandledRejection',
+        message: reason?.message || String(reason),
+        stack: reason?.stack || 'sem stack',
+        pid: process.pid
+      }) + osCrash.EOL;
+      fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), crashLine, 'utf8');
+    } catch (_e) { /* melhor esforco */ }
+
+    error('unhandledRejection', {
+      metadata: { error: reason, stack: reason?.stack }
+    });
+  });
+
+  process.on('exit', (code) => {
+    const fsCrash = require('fs');
+    const osCrash = require('os');
+    const crashDir = require('path').join(osCrash.tmpdir(), 'jv-myzap', 'logs');
+    try {
+      if (!fsCrash.existsSync(crashDir)) fsCrash.mkdirSync(crashDir, { recursive: true });
+      const exitLine = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'EXIT',
+        type: 'process_exit',
+        code,
+        pid: process.pid
+      }) + osCrash.EOL;
+      fsCrash.appendFileSync(require('path').join(crashDir, 'crash.log'), exitLine, 'utf8');
+    } catch (_e) { /* melhor esforco */ }
+  });
+}

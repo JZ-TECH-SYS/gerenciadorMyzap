@@ -9,7 +9,7 @@ function setButtonsState({ canStart, canDelete }) {
 function setIaConfigVisibility(isVisible) {
   const box = document.getElementById('ia-config-box');
   if (!box) return;
-  box.classList.toggle('d-none', !isVisible);
+  box.classList.toggle('d-none', !isVisible || !isIaConfigCapabilityEnabled());
 }
 
 const CONFIG_SYNC_INTERVAL_MS = 30 * 1000;
@@ -22,8 +22,118 @@ let myzapProgressPollTimer = null;
 let qrPollingTimer = null;
 let qrPollingAttempts = 0;
 let lastConfigDebugPayload = null;
+let currentCapabilityState = {
+  preferences: {},
+  snapshot: {}
+};
 const QR_POLL_INTERVAL_MS = 3000;
 const QR_POLL_MAX_ATTEMPTS = 40; // ~120s total
+
+const CAPABILITY_FIELD_IDS = {
+  supportsIaConfig: 'capability-ia-config-mode',
+  supportsTokenSync: 'capability-token-sync-mode',
+  supportsPassiveStatus: 'capability-passive-status-mode',
+  supportsQueuePolling: 'capability-queue-polling-mode'
+};
+
+function normalizeCapabilityMode(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'enabled' || raw === 'on' || raw === 'true' || raw === '1') return 'enabled';
+  if (raw === 'disabled' || raw === 'off' || raw === 'false' || raw === '0') return 'disabled';
+  return 'auto';
+}
+
+function getCapabilityEntry(capability) {
+  return currentCapabilityState?.snapshot?.[capability] || null;
+}
+
+function getCapabilityPreference(capability) {
+  return normalizeCapabilityMode(currentCapabilityState?.preferences?.[capability] || 'auto');
+}
+
+function isIaConfigCapabilityEnabled() {
+  return Boolean(getCapabilityEntry('supportsIaConfig')?.enabled);
+}
+
+function getCapabilityModeLabel(mode) {
+  const normalized = normalizeCapabilityMode(mode);
+  if (normalized === 'enabled') return 'habilitado manualmente';
+  if (normalized === 'disabled') return 'desabilitado manualmente';
+  return 'automatico';
+}
+
+function getCapabilityReasonLabel(entry = {}) {
+  const reason = String(entry?.reason || '').trim().toLowerCase();
+  const reasonLabels = {
+    manual_enabled: 'forcado manualmente como habilitado',
+    manual_disabled: 'forcado manualmente como desabilitado',
+    remote_hint_enabled: 'hint remoto informou suporte',
+    remote_hint_disabled: 'hint remoto informou ausencia',
+    remote_ia_fields_present: 'campos de IA presentes na API remota',
+    remote_ia_fields_missing: 'API remota nao retornou campos de IA',
+    ia_supported_and_active: 'IA suportada e ativa',
+    ia_unavailable_or_inactive: 'IA ausente ou inativa',
+    default_enabled: 'padrao habilitado',
+    default_disabled: 'padrao desabilitado',
+    local_ia_config_not_supported: 'MyZap local nao suporta update-config de IA'
+  };
+
+  return reasonLabels[reason] || (entry?.reason ? String(entry.reason) : 'sem detalhe');
+}
+
+function renderCapabilitySummary() {
+  const box = document.getElementById('capability-summary');
+  if (!box) return;
+
+  const labels = {
+    supportsIaConfig: 'Config. IA',
+    supportsTokenSync: 'Sync tokens',
+    supportsPassiveStatus: 'Status passivo',
+    supportsQueuePolling: 'Fila'
+  };
+
+  const html = Object.keys(CAPABILITY_FIELD_IDS).map((capability) => {
+    const entry = getCapabilityEntry(capability) || {};
+    const mode = getCapabilityPreference(capability);
+    const status = entry?.enabled ? 'ativo' : 'ignorado';
+    return `<div><strong>${labels[capability]}:</strong> ${status} (${getCapabilityModeLabel(mode)}; ${getCapabilityReasonLabel(entry)})</div>`;
+  }).join('');
+
+  box.innerHTML = html || 'Nenhuma capability resolvida ainda.';
+}
+
+function applyCapabilityState(payload = {}) {
+  currentCapabilityState = {
+    preferences: payload?.preferences || {},
+    snapshot: payload?.snapshot || {}
+  };
+
+  Object.entries(CAPABILITY_FIELD_IDS).forEach(([capability, fieldId]) => {
+    const select = document.getElementById(fieldId);
+    if (!select) return;
+    select.value = getCapabilityPreference(capability);
+  });
+
+  renderCapabilitySummary();
+  if (!isIaConfigCapabilityEnabled()) {
+    setIaConfigVisibility(false);
+  }
+}
+
+async function refreshCapabilityState() {
+  if (!window.api?.getCapabilitySnapshot) return currentCapabilityState;
+  const payload = await window.api.getCapabilitySnapshot();
+  applyCapabilityState(payload);
+  return payload;
+}
+
+function getCapabilityPreferencesFromForm() {
+  return Object.entries(CAPABILITY_FIELD_IDS).reduce((acc, [capability, fieldId]) => {
+    const select = document.getElementById(fieldId);
+    acc[capability] = normalizeCapabilityMode(select?.value || 'auto');
+    return acc;
+  }, {});
+}
 
 function clampPercent(value) {
   const numeric = Number(value);
@@ -327,7 +437,7 @@ function renderRuntimeInfo({ modoIntegracao, lastSyncAt, remoteConfigOk = true }
     <div><strong>Modo atual:</strong> ${modoLabel}</div>
     <div><strong>Configuracao remota validada:</strong> ${remoteConfigOk ? 'sim' : 'nao'}</div>
     <div><strong>Sincronizacao API -> gerenciador:</strong> a cada ${CONFIG_SYNC_INTERVAL_MS / 1000}s</div>
-    <div><strong>Troca de modo no ClickExpress:</strong> aplicada automaticamente em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s</div>
+    <div><strong>Troca de modo no backend:</strong> aplicada automaticamente em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s</div>
     <div><strong>Tentativa de iniciar fila local:</strong> a cada ${QUEUE_POLL_INTERVAL_MS / 1000}s (somente modo local)</div>
     <div><strong>Atualizacao de status passivo:</strong> a cada ${STATUS_WATCH_INTERVAL_MS / 1000}s (somente modo local)</div>
     <div><strong>Atualizacao de codigo do MyZap (git pull):</strong> ao iniciar o MyZap local</div>
@@ -349,7 +459,7 @@ function applyModoInfoBanner(modoIntegracao) {
 
   box.classList.remove('alert-info');
   box.classList.add('alert-warning');
-  box.textContent = `Modo web/online ativo. O MyZap local esta desativado neste computador. Atualize no ClickExpress para modo local/fila se quiser usar WhatsApp local. A sincronizacao aplica em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s.`;
+  box.textContent = `Modo web/online ativo. O MyZap local esta desativado neste computador. Atualize o backend da empresa para modo local/fila se quiser usar WhatsApp local. A sincronizacao aplica em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s.`;
 }
 
 function setOnlineOnlyView(enabled, customMessage = '') {
@@ -376,7 +486,7 @@ function setOnlineOnlyView(enabled, customMessage = '') {
     if (myzapPane) myzapPane.classList.add('show', 'active');
     if (statusTabBtn) statusTabBtn.classList.remove('active');
     if (runtimeInfo) runtimeInfo.classList.add('d-none');
-    onlineBox.textContent = customMessage || `Modo web/online ativo. As mensagens do WhatsApp estao sendo enviadas de forma online (nao local). Para usar WhatsApp local, altere o modo para local/fila no ClickExpress. Aplicacao automatica em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s.`;
+    onlineBox.textContent = customMessage || `Modo web/online ativo. As mensagens do WhatsApp estao sendo enviadas de forma online (nao local). Para usar WhatsApp local, altere o modo para local/fila no backend da empresa. Aplicacao automatica em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s.`;
     return;
   }
 
@@ -397,6 +507,7 @@ let configAutoRefreshTimer = null;
 
 async function refreshConfigFromApiAndRender() {
   const autoConfig = await window.api.prepareMyZapAutoConfig(true);
+  await refreshCapabilityState();
   await atualizarDebugConfigPainel(autoConfig);
   if (autoConfig?.status === 'error') {
     setOnlineOnlyView(true, `Nao foi possivel consultar a rota de configuracao do MyZap agora: ${autoConfig?.message || 'erro desconhecido'}. Verifique API/Token/Empresa e tente novamente.`);
@@ -430,7 +541,7 @@ async function refreshConfigFromApiAndRender() {
     if (statusApi) {
       statusApi.textContent = !myzap_remoteConfigOk
         ? 'Nao foi possivel validar modo na API. Start local bloqueado.'
-        : `Modo web/online: start local desativado. Troque para local/fila no ClickExpress (sync em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s).`;
+        : `Modo web/online: start local desativado. Troque para local/fila no backend da empresa (sync em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s).`;
       statusApi.className = 'badge bg-info text-dark status-badge';
     }
     if (statusInstallation) {
@@ -489,7 +600,12 @@ function startConfigAutoRefresh() {
 
 async function loadConfigs() {
   try {
+    const configIntro = document.querySelector('#config > p.text-muted.mb-3');
+    if (configIntro) {
+      configIntro.innerHTML = 'Preencha o <strong>TOKEN</strong> antes de instalar o MyZap. As demais configuracoes (Session Key, diretorio, modo e features opcionais) sao sincronizadas automaticamente da API do backend da empresa.';
+    }
     const autoConfig = await window.api.prepareMyZapAutoConfig(true);
+    await refreshCapabilityState();
     await atualizarDebugConfigPainel(autoConfig);
     const remoteConfigOk = autoConfig?.status !== 'error';
     if (autoConfig?.status === 'error') {
@@ -509,8 +625,6 @@ async function loadConfigs() {
     const myzap_modoIntegracao = (await window.api.getStore('myzap_modoIntegracao')) ?? 'local';
     const myzap_lastRemoteConfigSyncAt = (await window.api.getStore('myzap_lastRemoteConfigSyncAt')) ?? 0;
     const myzap_remoteConfigOk = Boolean(await window.api.getStore('myzap_remoteConfigOk'));
-    const clickexpress_apiUrl = (await window.api.getStore('clickexpress_apiUrl')) ?? '';
-    const clickexpress_queueToken = (await window.api.getStore('clickexpress_queueToken')) ?? '';
     const modoLocal = isModoLocal(myzap_modoIntegracao);
 
     applyModoInfoBanner(myzap_modoIntegracao);
@@ -552,7 +666,7 @@ async function loadConfigs() {
 
       statusApi.textContent = !myzap_remoteConfigOk
         ? 'Nao foi possivel validar modo na API. Start local bloqueado.'
-        : `Modo web/online: start local desativado. Troque para local/fila no ClickExpress (sync em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s).`;
+        : `Modo web/online: start local desativado. Troque para local/fila no backend da empresa (sync em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s).`;
       statusApi.classList.remove('bg-secondary', 'bg-danger', 'bg-success');
       statusApi.classList.add('bg-info', 'text-dark');
       btnStart.disabled = true;
@@ -741,7 +855,7 @@ async function checkConnection() {
   if (!(await isModoLocalAtivo())) {
     statusIndicator.className = 'status-indicator waiting';
     statusIndicator.textContent = 'Modo local inativo ou nao validado';
-    qrBox.innerHTML = `<span class="text-muted-small">QR Code local indisponivel. Verifique o modo no ClickExpress e a validacao da rota de configuracao.</span>`;
+    qrBox.innerHTML = `<span class="text-muted-small">QR Code local indisponivel. Verifique o modo no backend da empresa e a validacao da rota de configuracao.</span>`;
     setButtonsState({ canStart: false, canDelete: false });
     setIaConfigVisibility(false);
     return;
@@ -946,7 +1060,7 @@ function startQrPolling() {
 async function iniciarSessao() {
   console.log('[MyZap UI] iniciarSessao: botao clicado');
   if (!(await isModoLocalAtivo())) {
-    alert(`Modo local inativo ou nao validado pela API. Verifique o modo no ClickExpress e aguarde ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s para sincronizacao.`);
+    alert(`Modo local inativo ou nao validado pela API. Verifique o modo no backend da empresa e aguarde ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s para sincronizacao.`);
     return;
   }
 
@@ -1017,7 +1131,7 @@ async function deletarSessao() {
   console.log('[MyZap UI] deletarSessao: botao clicado');
   stopQrPolling(); // Cancelar polling de QR em andamento
   if (!(await isModoLocalAtivo())) {
-    alert(`Modo local inativo ou nao validado pela API. Verifique o modo no ClickExpress e aguarde ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s para sincronizacao.`);
+    alert(`Modo local inativo ou nao validado pela API. Verifique o modo no backend da empresa e aguarde ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s para sincronizacao.`);
     return;
   }
 
@@ -1081,7 +1195,12 @@ async function deletarSessao() {
 
 async function salvarMensagemPadrao() {
   if (!(await isModoLocalAtivo())) {
-    alert(`Modo local inativo ou nao validado pela API. Para aplicar no local, verifique o modo no ClickExpress e aguarde ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s.`);
+    alert(`Modo local inativo ou nao validado pela API. Para aplicar no local, verifique o modo no backend da empresa e aguarde ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s.`);
+    return;
+  }
+
+  if (!isIaConfigCapabilityEnabled()) {
+    alert('Configuracao de IA ignorada: este backend/MyZap local nao suporta essa feature no momento.');
     return;
   }
 
@@ -1103,6 +1222,13 @@ async function salvarMensagemPadrao() {
 
     if (!response || response.status === 'error') {
       throw new Error(response?.message || 'Falha ao salvar configuracao da IA');
+    }
+
+    await refreshCapabilityState();
+    if (response?.status === 'skipped') {
+      setIaConfigVisibility(false);
+      alert(response?.message || 'Configuracao opcional de IA ignorada.');
+      return;
     }
 
     alert('Mensagem padrao atualizada com sucesso.');
@@ -1141,6 +1267,16 @@ function updateConfigInstallHint(tokenValue) {
   }
 }
 
+async function saveCapabilityPreferencesFromUi() {
+  if (!window.api?.saveCapabilityPreferences) {
+    return { status: 'success', preferences: {}, snapshot: {} };
+  }
+
+  const result = await window.api.saveCapabilityPreferences(getCapabilityPreferencesFromForm());
+  applyCapabilityState(result);
+  return result;
+}
+
 const cfg_myzap = document.getElementById('myzap-config-form');
 
 cfg_myzap.onsubmit = async (e) => {
@@ -1151,6 +1287,11 @@ cfg_myzap.onsubmit = async (e) => {
   btnSave.textContent = 'Salvando...';
   const tokenVal = (document.getElementById('input-env-token')?.value || '').trim();
   try {
+    const capabilityResult = await saveCapabilityPreferencesFromUi();
+    if (capabilityResult?.status !== 'success') {
+      throw new Error(capabilityResult?.message || 'Falha ao salvar as features opcionais.');
+    }
+
     const secrets = {
       TOKEN: tokenVal,
       OPENAI_API_KEY: (document.getElementById('input-env-openai')?.value || '').trim(),
@@ -1187,6 +1328,11 @@ async function salvarEInstalar() {
   }
 
   try {
+    const capabilityResult = await saveCapabilityPreferencesFromUi();
+    if (capabilityResult?.status !== 'success') {
+      throw new Error(capabilityResult?.message || 'Falha ao salvar as features opcionais.');
+    }
+
     const secrets = {
       TOKEN: tokenVal,
       OPENAI_API_KEY: (document.getElementById('input-env-openai')?.value || '').trim(),
@@ -1239,7 +1385,7 @@ async function iniciarMyZapServico() {
   if (!myzap_remoteConfigOk || !isModoLocal(myzap_modoIntegracao)) {
     statusApi.textContent = !myzap_remoteConfigOk
       ? 'Nao foi possivel validar modo na API. Start local bloqueado.'
-      : `Modo web/online: MyZap local desativado. Troque para local/fila no ClickExpress (sync em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s).`;
+      : `Modo web/online: MyZap local desativado. Troque para local/fila no backend da empresa (sync em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s).`;
     statusApi.className = 'badge bg-info text-dark status-badge';
     btnStart.disabled = true;
     return;

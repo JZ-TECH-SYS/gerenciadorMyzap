@@ -1,21 +1,13 @@
 const Store = require('electron-store');
 const store = new Store();
-const { warn, error, debug } = require('../myzapLogger');
-
-function parseBooleanLike(value, defaultValue = false) {
-    if (value === undefined || value === null || value === '') return defaultValue;
-    const normalized = String(value).trim().toLowerCase();
-
-    if (['1', 'true', 'sim', 'yes', 'y', 'on', 'ativo'].includes(normalized)) {
-        return true;
-    }
-
-    if (['0', 'false', 'nao', 'no', 'off', 'inativo'].includes(normalized)) {
-        return false;
-    }
-
-    return defaultValue;
-}
+const { info, warn, error, debug } = require('../myzapLogger');
+const {
+    parseBooleanLike,
+    normalizeCapabilityMode,
+    getCapabilityEntry,
+    markCapabilityRuntimeUnavailable,
+    clearCapabilityRuntimeUnavailable
+} = require('../capabilities');
 
 function normalizeUpdateArgs(rawInput) {
     if (typeof rawInput === 'string') {
@@ -34,6 +26,30 @@ function normalizeUpdateArgs(rawInput) {
     }
 
     return {};
+}
+
+function isMissingIaConfigResponse(status, data = {}) {
+    const errorText = String(
+        data?.error
+        || data?.message
+        || data?.mensagem
+        || ''
+    ).trim().toLowerCase();
+
+    if (status === 404) {
+        return true;
+    }
+
+    if (!errorText) {
+        return false;
+    }
+
+    return (
+        errorText.includes('configuracao nao encontrada')
+        || errorText.includes('configuração não encontrada')
+        || errorText.includes('configuracao não encontrada')
+        || errorText.includes('configuração nao encontrada')
+    );
 }
 
 async function updateIaConfig(rawInput) {
@@ -56,6 +72,26 @@ async function updateIaConfig(rawInput) {
         input.iaAtiva !== undefined ? input.iaAtiva : store.get('myzap_iaAtiva'),
         false
     );
+    const iaCapability = getCapabilityEntry('supportsIaConfig', store);
+    const iaCapabilityMode = normalizeCapabilityMode(store.get('myzap_capabilityIaConfigMode') || 'auto');
+
+    store.set({
+        myzap_mensagemPadrao: mensagemPadrao
+    });
+
+    if (!iaCapability?.enabled) {
+        info('Configuracao opcional de IA ignorada por nao suportada ou desabilitada', {
+            metadata: {
+                area: 'updateIaConfig',
+                capability: iaCapability || null
+            }
+        });
+        return {
+            status: 'skipped',
+            reason: iaCapability?.reason || 'capability_disabled',
+            message: 'Configuracao de IA ignorada: recurso nao suportado ou desabilitado.'
+        };
+    }
 
     if (!token) {
         warn('Token nao encontrado', {
@@ -103,6 +139,36 @@ async function updateIaConfig(rawInput) {
         });
 
         const data = await res.json().catch(() => ({}));
+        if (isMissingIaConfigResponse(res.status, data)) {
+            warn('Configuracao opcional de IA nao encontrada no MyZap local. Fluxo principal sera mantido.', {
+                metadata: {
+                    area: 'updateIaConfig',
+                    httpStatus: res.status,
+                    capabilityMode: iaCapabilityMode,
+                    response: data
+                }
+            });
+
+            if (iaCapabilityMode === 'auto') {
+                markCapabilityRuntimeUnavailable(
+                    'supportsIaConfig',
+                    'local_ia_config_not_supported',
+                    {
+                        httpStatus: res.status,
+                        response: data
+                    },
+                    store
+                );
+            }
+
+            return {
+                status: 'skipped',
+                reason: 'local_ia_config_not_supported',
+                message: 'Configuracao opcional de IA nao suportada ou nao configurada no MyZap local.',
+                data
+            };
+        }
+
         if (!res.ok || data?.error) {
             return {
                 status: 'error',
@@ -110,6 +176,8 @@ async function updateIaConfig(rawInput) {
                 data
             };
         }
+
+        clearCapabilityRuntimeUnavailable('supportsIaConfig', store);
 
         store.set({
             myzap_mensagemPadrao: mensagemPadrao,

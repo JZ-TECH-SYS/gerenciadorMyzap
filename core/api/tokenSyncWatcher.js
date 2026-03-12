@@ -13,6 +13,11 @@
 
 const Store = require('electron-store');
 const { info, warn, error, debug } = require('../myzap/myzapLogger');
+const {
+    isCapabilityEnabled,
+    getCapabilityEntry,
+    getBackendApiConfig
+} = require('../myzap/capabilities');
 
 const store = new Store();
 const MYZAP_API_URL = 'http://localhost:5555/';
@@ -41,6 +46,10 @@ function isIaAtiva() {
 function isModoLocal() {
     const modo = String(store.get('myzap_modoIntegracao') || 'local').trim().toLowerCase();
     return modo === 'local';
+}
+
+function supportsTokenSync() {
+    return isCapabilityEnabled('supportsTokenSync', store);
 }
 
 /**
@@ -98,12 +107,14 @@ async function buscarTokensConsumidosLocal() {
  * Sincronizacao incremental: envia apenas o delta.
  */
 async function enviarTokensParaApiPrincipal(tokensTotal, tokensDelta) {
-    const clickApiUrl = normalizeBaseUrl(String(store.get('clickexpress_apiUrl') || '').trim());
-    const clickToken = String(store.get('clickexpress_queueToken') || '').trim();
+    const {
+        backendApiUrl,
+        backendApiToken
+    } = getBackendApiConfig(store);
     const sessionKey = String(store.get('myzap_sessionKey') || '').trim();
     const idempresa = String(store.get('idempresa') || '').trim();
 
-    if (!clickApiUrl || !clickToken || !sessionKey) {
+    if (!backendApiUrl || !backendApiToken || !sessionKey) {
         return { ok: false, error: 'CONFIG_INCOMPLETA' };
     }
 
@@ -119,11 +130,11 @@ async function enviarTokensParaApiPrincipal(tokensTotal, tokensDelta) {
             data_sincronizacao: new Date().toISOString()
         };
 
-        const res = await fetch(`${clickApiUrl}parametrizacao-myzap/tokens/sync`, {
+        const res = await fetch(`${normalizeBaseUrl(backendApiUrl)}parametrizacao-myzap/tokens/sync`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${clickToken}`
+                Authorization: `Bearer ${backendApiToken}`
             },
             body: JSON.stringify(payload),
             signal: ctrl.signal
@@ -150,6 +161,16 @@ async function enviarTokensParaApiPrincipal(tokensTotal, tokensDelta) {
 }
 
 async function processarUmaRodada() {
+    if (!supportsTokenSync()) {
+        if (ativo) {
+            info('[TokenSync] Watcher interrompido porque a capability foi desabilitada', {
+                metadata: { area: 'tokenSyncWatcher' }
+            });
+            stopTokenSyncWatcher();
+        }
+        return;
+    }
+
     // Verificar condicoes: IA ativa + modo local
     if (!isIaAtiva()) {
         debug('[TokenSync] IA nao esta ativa, pulando ciclo');
@@ -229,6 +250,19 @@ function startTokenSyncWatcher() {
         return { status: 'success', message: 'Watcher de sync de tokens ja esta em execucao.' };
     }
 
+    if (!supportsTokenSync()) {
+        info('[TokenSync] Watcher ignorado por capability desabilitada', {
+            metadata: {
+                area: 'tokenSyncWatcher',
+                capability: getCapabilityEntry('supportsTokenSync', store)
+            }
+        });
+        return {
+            status: 'skipped',
+            message: 'Watcher de tokens ignorado: recurso nao suportado ou desabilitado.'
+        };
+    }
+
     // Pre-condicao: IA ativa + modo local
     if (!isIaAtiva() || !isModoLocal()) {
         debug('[TokenSync] Condicoes nao atendidas para iniciar (IA ativa + modo local)', {
@@ -287,6 +321,7 @@ function stopTokenSyncWatcher() {
 function getTokenSyncWatcherStatus() {
     return {
         ativo,
+        capabilityEnabled: supportsTokenSync(),
         iaAtiva: isIaAtiva(),
         modoLocal: isModoLocal(),
         ultimaExecucaoEm,

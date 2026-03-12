@@ -10,9 +10,10 @@ function openLogViewer() {
   }
 
   win = new BrowserWindow({
-    width: 600,
-    height: 500,
+    width: 920,
+    height: 680,
     resizable: true,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, '../../src/loads/preloadLog.js'),
       contextIsolation: true,

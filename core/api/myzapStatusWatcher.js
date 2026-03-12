@@ -1,6 +1,11 @@
 const Store = require('electron-store');
 const verifyRealStatus = require('../myzap/api/verifyRealStatus');
 const { info, warn, error } = require('../myzap/myzapLogger');
+const {
+  isCapabilityEnabled,
+  getCapabilityEntry,
+  getBackendApiConfig
+} = require('../myzap/capabilities');
 
 const store = new Store();
 const LOOP_INTERVAL_MS = 10000;
@@ -29,6 +34,10 @@ function normalizeBaseUrl(url) {
   return url.endsWith('/') ? url : `${url}/`;
 }
 
+function isPassiveStatusSupported() {
+  return isCapabilityEnabled('supportsPassiveStatus', store);
+}
+
 function formatDateTimeForApi(date = new Date()) {
   const pad = (value) => String(value).padStart(2, '0');
   const yyyy = date.getFullYear();
@@ -45,32 +54,47 @@ function isMyZapConnected(realStatusPayload) {
 }
 
 function getActiveConfig() {
-  const clickApiUrl = normalizeBaseUrl(String(store.get('clickexpress_apiUrl') || '').trim());
-  const clickToken = String(store.get('clickexpress_queueToken') || '').trim();
+  const {
+    backendApiUrl,
+    backendApiToken
+  } = getBackendApiConfig(store);
   const sessionKey = String(store.get('myzap_sessionKey') || '').trim();
   const sessionName = String(store.get('myzap_sessionName') || sessionKey).trim();
+  const idempresa = String(store.get('idempresa') || '').trim();
 
   return {
-    clickApiUrl,
-    clickToken,
+    backendApiUrl: normalizeBaseUrl(backendApiUrl),
+    backendApiToken,
     sessionKey,
-    sessionName
+    sessionName,
+    idempresa
   };
 }
 
 async function enviarStatusMyZap() {
   const {
-    clickApiUrl,
-    clickToken,
+    backendApiUrl,
+    backendApiToken,
     sessionKey,
-    sessionName
+    sessionName,
+    idempresa
   } = getActiveConfig();
 
   ultimaExecucaoEm = new Date().toISOString();
 
-  if (!clickApiUrl || !clickToken || !sessionKey || !sessionName) {
+  if (!isPassiveStatusSupported()) {
+    info('[StatusMyZap] Atualizacao passiva ignorada por capability desabilitada', {
+      metadata: {
+        area: 'myzapStatusWatcher',
+        capability: getCapabilityEntry('supportsPassiveStatus', store)
+      }
+    });
+    return false;
+  }
+
+  if (!backendApiUrl || !backendApiToken || !sessionKey || !sessionName) {
     info('[StatusMyZap] Config incompleta, pulando envio de status', {
-      metadata: { area: 'myzapStatusWatcher', clickApiUrl: !!clickApiUrl, clickToken: !!clickToken, sessionKey: !!sessionKey, sessionName: !!sessionName }
+      metadata: { area: 'myzapStatusWatcher', backendApiUrl: !!backendApiUrl, backendApiToken: !!backendApiToken, sessionKey: !!sessionKey, sessionName: !!sessionName }
     });
     return false;
   }
@@ -98,15 +122,19 @@ async function enviarStatusMyZap() {
     data_ult_verificacao: formatDateTimeForApi()
   };
 
+  if (idempresa) {
+    body.idempresa = idempresa;
+  }
+
   info('[StatusMyZap] Enviando PUT para API', {
-    metadata: { area: 'myzapStatusWatcher', url: `${clickApiUrl}parametrizacao-myzap/status`, body }
+    metadata: { area: 'myzapStatusWatcher', url: `${backendApiUrl}parametrizacao-myzap/status`, body }
   });
 
-  const res = await fetch(`${clickApiUrl}parametrizacao-myzap/status`, {
+  const res = await fetch(`${backendApiUrl}parametrizacao-myzap/status`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${clickToken}`
+      Authorization: `Bearer ${backendApiToken}`
     },
     body: JSON.stringify(body)
   });
@@ -129,6 +157,16 @@ async function enviarStatusMyZap() {
 }
 
 async function processarUmaRodada() {
+  if (!isPassiveStatusSupported()) {
+    if (ativo) {
+      info('[StatusMyZap] Watcher passivo interrompido porque a capability foi desabilitada', {
+        metadata: { area: 'myzapStatusWatcher' }
+      });
+      stopMyzapStatusWatcher();
+    }
+    return;
+  }
+
   info('[StatusMyZap] Iniciando ciclo de atualizacao de status', {
     metadata: { area: 'myzapStatusWatcher' }
   });
@@ -138,7 +176,7 @@ async function processarUmaRodada() {
     ultimoErro = null;
   } catch (err) {
     ultimoErro = err?.message || String(err);
-    warn('[StatusMyZap] Falha ao atualizar status passivo do MyZap na ClickExpress', {
+    warn('[StatusMyZap] Falha ao atualizar status passivo do MyZap no backend da empresa', {
       metadata: { area: 'myzapStatusWatcher', error: err?.message || String(err) }
     });
   }
@@ -147,6 +185,19 @@ async function processarUmaRodada() {
 async function startMyzapStatusWatcher() {
   if (ativo) {
     return { status: 'success', message: 'Watcher de status passivo do MyZap ja esta em execucao.' };
+  }
+
+  if (!isPassiveStatusSupported()) {
+    info('[StatusMyZap] Watcher passivo ignorado por capability desabilitada', {
+      metadata: {
+        area: 'myzapStatusWatcher',
+        capability: getCapabilityEntry('supportsPassiveStatus', store)
+      }
+    });
+    return {
+      status: 'skipped',
+      message: 'Watcher de status passivo ignorado: recurso nao suportado ou desabilitado.'
+    };
   }
 
   ativo = true;
@@ -198,6 +249,7 @@ function stopMyzapStatusWatcher() {
 function getMyzapStatusWatcherInfo() {
   return {
     ativo,
+    capabilityEnabled: isPassiveStatusSupported(),
     ultimoErro,
     ultimaExecucaoEm,
     loopIntervalMs: LOOP_INTERVAL_MS

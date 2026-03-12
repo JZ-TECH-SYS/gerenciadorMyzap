@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('api', {
   startSession: () => ipcRenderer.invoke('myzap:startSession'),
   deleteSession: () => ipcRenderer.invoke('myzap:deleteSession'),
   updateIaConfig: (mensagemPadrao) => ipcRenderer.invoke('myzap:updateIaConfig', mensagemPadrao),
+  getCapabilitySnapshot: () => ipcRenderer.invoke('myzap:getCapabilitySnapshot'),
+  saveCapabilityPreferences: (preferences) => ipcRenderer.invoke('myzap:saveCapabilityPreferences', preferences),
   startQueueWatcher: () => ipcRenderer.invoke('myzap:startQueueWatcher'),
   stopQueueWatcher: () => ipcRenderer.invoke('myzap:stopQueueWatcher'),
   getQueueWatcherStatus: () => ipcRenderer.invoke('myzap:getQueueWatcherStatus'),

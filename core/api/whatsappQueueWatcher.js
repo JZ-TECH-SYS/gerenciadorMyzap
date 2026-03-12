@@ -1,5 +1,10 @@
 const Store = require('electron-store');
 const { info, warn, error, debug } = require('../myzap/myzapLogger');
+const {
+  isCapabilityEnabled,
+  getCapabilityEntry,
+  getBackendApiConfig
+} = require('../myzap/capabilities');
 
 const store = new Store();
 const MYZAP_API_URL = 'http://localhost:5555/';
@@ -22,6 +27,10 @@ const SKIP_LOG_EVERY = 5;
 function normalizeBaseUrl(url) {
   if (!url || typeof url !== 'string') return '';
   return url.endsWith('/') ? url : `${url}/`;
+}
+
+function supportsQueuePolling() {
+  return isCapabilityEnabled('supportsQueuePolling', store);
 }
 
 async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
@@ -57,16 +66,30 @@ async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
   }
 }
 
-async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName) {
-  const query = new URLSearchParams({
+async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idempresa = '') {
+  const params = new URLSearchParams({
     sessionKey: sessionKey || '',
     sessionToken: sessionName || ''
-  }).toString();
+  });
+
+  if (idempresa) {
+    params.set('idempresa', idempresa);
+  }
+
+  const query = params.toString();
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
-  debug('[FilaMyZap] Buscando pendentes', { metadata: { apiBaseUrl, sessionKey, sessionName, query } });
+  debug('[FilaMyZap] Buscando pendentes', {
+    metadata: {
+      apiBaseUrl,
+      sessionKey,
+      sessionName,
+      idempresa: idempresa || null,
+      query
+    }
+  });
   const res = await fetch(`${apiBaseUrl}parametrizacao-myzap/pendentes?${query}`, {
     method: 'GET',
     headers: { Authorization: `Bearer ${token}` },
@@ -185,39 +208,52 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackApiToken) {
 }
 
 async function obterCredenciaisAtivas() {
-  const clickApiUrl = normalizeBaseUrl(String(store.get('clickexpress_apiUrl') || '').trim());
-  const clickToken = String(store.get('clickexpress_queueToken') || '').trim();
+  const {
+    backendApiUrl,
+    backendApiToken
+  } = getBackendApiConfig(store);
   const sessionKey = String(store.get('myzap_sessionKey') || '').trim();
   const sessionName = String(store.get('myzap_sessionName') || sessionKey).trim();
   const myzapApiToken = String(store.get('myzap_apiToken') || '').trim();
+  const idempresa = String(store.get('idempresa') || '').trim();
 
   return {
-    clickApiUrl,
-    clickToken,
+    backendApiUrl: normalizeBaseUrl(backendApiUrl),
+    backendApiToken,
     sessionKey,
     sessionName,
-    myzapApiToken
+    myzapApiToken,
+    idempresa
   };
 }
 
 async function listarPendentesMyZap() {
   const config = await obterCredenciaisAtivas();
   const {
-    clickApiUrl,
-    clickToken,
+    backendApiUrl,
+    backendApiToken,
     sessionKey,
-    sessionName
+    sessionName,
+    idempresa
   } = config;
 
-  if (!clickApiUrl || !clickToken || !sessionKey || !sessionName) {
+  if (!backendApiUrl || !backendApiToken || !sessionKey || !sessionName) {
     return [];
   }
 
-  return buscarPendentes(clickApiUrl, clickToken, sessionKey, sessionName);
+  return buscarPendentes(backendApiUrl, backendApiToken, sessionKey, sessionName, idempresa);
 }
 
 async function processarFilaUmaRodada() {
   if (!ativo) return;
+
+  if (!supportsQueuePolling()) {
+    info('[FilaMyZap] Watcher interrompido porque a capability foi desabilitada', {
+      metadata: { area: 'whatsappQueueWatcher' }
+    });
+    stopWhatsappQueueWatcher();
+    return;
+  }
 
   // Protecao contra processamento travado (timeout de seguranca)
   if (processando) {
@@ -296,10 +332,11 @@ async function processarFilaUmaRodada() {
     }
 
     const {
-      clickApiUrl,
-      clickToken,
+      backendApiUrl,
+      backendApiToken,
       sessionKey,
-      myzapApiToken
+      myzapApiToken,
+      idempresa
     } = await obterCredenciaisAtivas();
 
     for (const mensagem of lote) {
@@ -337,9 +374,9 @@ async function processarFilaUmaRodada() {
         });
       }
 
-      const statusOk = await atualizarStatusFila(clickApiUrl, clickToken, {
+      const statusOk = await atualizarStatusFila(backendApiUrl, backendApiToken, {
         idfila: mensagem?.idfila,
-        idempresa: mensagem?.idempresa,
+        idempresa: mensagem?.idempresa || idempresa,
         status: novoStatus
       });
 
@@ -374,18 +411,31 @@ async function startWhatsappQueueWatcher() {
     return { status: 'success', message: 'Watcher da fila MyZap ja esta em execucao.' };
   }
 
+  if (!supportsQueuePolling()) {
+    info('[FilaMyZap] Watcher ignorado por capability desabilitada', {
+      metadata: {
+        area: 'whatsappQueueWatcher',
+        capability: getCapabilityEntry('supportsQueuePolling', store)
+      }
+    });
+    return {
+      status: 'skipped',
+      message: 'Watcher da fila ignorado: recurso nao suportado ou desabilitado.'
+    };
+  }
+
   const config = await obterCredenciaisAtivas();
-  if (!config.clickApiUrl || !config.clickToken || !config.sessionKey || !config.myzapApiToken) {
+  if (!config.backendApiUrl || !config.backendApiToken || !config.sessionKey || !config.myzapApiToken) {
     warn('[FilaMyZap] Configuracao incompleta para iniciar watcher', {
       metadata: {
-        clickApiUrl: !!config.clickApiUrl,
-        clickToken: !!config.clickToken,
+        backendApiUrl: !!config.backendApiUrl,
+        backendApiToken: !!config.backendApiToken,
         sessionKey: !!config.sessionKey,
         sessionName: !!config.sessionName,
         myzapApiToken: !!config.myzapApiToken
       }
     });
-    return { status: 'error', message: 'Configuracao do ClickExpress/MyZap incompleta.' };
+    return { status: 'error', message: 'Configuracao do backend/MyZap incompleta.' };
   }
 
   const myzapDisponivel = await validarDisponibilidadeMyZap(config.sessionKey, config.myzapApiToken);
@@ -443,6 +493,7 @@ function getWhatsappQueueWatcherStatus() {
 
   return {
     ativo,
+    capabilityEnabled: supportsQueuePolling(),
     processando,
     ultimoLote,
     ultimaExecucaoEm,
