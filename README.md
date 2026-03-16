@@ -6,7 +6,7 @@ Aplicação desktop **Electron** para gerenciamento do serviço **MyZap** — in
 
 ## Funcionalidades
 
-- **Instalação automatizada** do MyZap (clone do repositório, instalação de dependências via pnpm, configuração do `.env`)
+- **Instalação automatizada** do MyZap (download do pacote oficial, instalação de dependências via runtime interno, configuração do `.env`)
 - **Painel de controle** (3 abas):
   - **MyZap** — status da API, QR Code, iniciar/deletar sessão WhatsApp
   - **Status** — monitoramento em tempo real da conexão
@@ -22,9 +22,12 @@ Aplicação desktop **Electron** para gerenciamento do serviço **MyZap** — in
 
 ## Requisitos
 
+Para usar o instalador do Gerenciador MyZap, nao e necessario instalar Git, Node.js ou pnpm manualmente.
+
+Para desenvolvimento deste repositório:
+
 - Node.js 18+
-- pnpm (instalado automaticamente pela aplicação se ausente)
-- Git
+- pnpm
 
 ---
 
@@ -112,4 +115,4 @@ gerenciadorMyzap/
 
 ## Repositório MyZap
 
-O serviço MyZap é clonado de: `https://github.com/JZ-TECH-SYS/myzap.git`
+O serviço MyZap e baixado a partir de: `https://github.com/JZ-TECH-SYS/myzap`
