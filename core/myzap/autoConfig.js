@@ -29,7 +29,7 @@ const {
 const store = new Store();
 const REMOTE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const LAST_REMOTE_SYNC_KEY = 'myzap_lastRemoteConfigSyncAt';
-const ENSURE_STALE_TIMEOUT_MS = 2 * 60 * 1000;
+const ENSURE_STALE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_DEBUG_TEXT_LENGTH = 12000;
 const MAX_DEBUG_ITEMS = 80;
 let ensureInFlight = null;

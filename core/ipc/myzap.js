@@ -18,6 +18,7 @@ const {
 } = require('../myzap/autoConfig');
 const { resetMyZapEnvironment } = require('../myzap/resetEnvironment');
 const { getStateSnapshot } = require('../myzap/stateMachine');
+const { getPrivilegeStatus } = require('../myzap/processUtils');
 const {
     getUltimosPendentesMyZap,
     startWhatsappQueueWatcher,
@@ -138,6 +139,24 @@ function registerMyZapHandlers(ipcMain) {
                 reason: 'ipc_error',
                 error: error.message || String(error),
                 attempts: []
+            };
+        }
+    });
+
+    ipcMain.handle('myzap:getPrivilegeStatus', async () => {
+        try {
+            return getPrivilegeStatus();
+        } catch (error) {
+            warn('Falha ao verificar privilegios do processo via IPC', {
+                metadata: { error }
+            });
+            return {
+                platform: process.platform,
+                isElevated: false,
+                requiresAdminForLocalInstall: false,
+                needsAdminForLocalInstall: false,
+                method: 'ipc_error',
+                message: error.message || String(error)
             };
         }
     });

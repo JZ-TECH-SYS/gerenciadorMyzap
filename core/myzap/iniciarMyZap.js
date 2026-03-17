@@ -2,7 +2,12 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { error: logError, info, warn } = require('./myzapLogger');
-const { isPortInUse, getPnpmCommand } = require('./processUtils');
+const {
+  isPortInUse,
+  isLocalHttpServiceReachable,
+  getPnpmCommand,
+  getGitCommand,
+} = require('./processUtils');
 const { transition } = require('./stateMachine');
 
 function getErrorMessage(error) {
@@ -38,13 +43,29 @@ function killMyZapProcess() {
   }
 }
 
-function executarComando(comando, args, cwd) {
+function executarComando(executor, args, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn(comando, args, {
+    const runner = (typeof executor === 'string')
+      ? {
+        command: executor,
+        prefixArgs: [],
+        shell: false,
+        env: process.env,
+      }
+      : {
+        prefixArgs: [],
+        shell: false,
+        env: process.env,
+        ...executor,
+      };
+    const child = spawn(runner.command, [...runner.prefixArgs, ...args], {
       cwd,
-      shell: true,
+      shell: runner.shell,
+      env: runner.env,
       windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const commandLabel = runner.source || runner.command;
 
     let stderr = '';
 
@@ -58,7 +79,7 @@ function executarComando(comando, args, cwd) {
         resolve();
         return;
       }
-      reject(new Error(stderr.trim() || `Comando "${comando}" finalizou com codigo ${code}.`));
+      reject(new Error(stderr.trim() || `Comando "${commandLabel}" finalizou com codigo ${code}.`));
     });
   });
 }
@@ -72,7 +93,12 @@ function wait(ms) {
 async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500) {
   const inicio = Date.now();
   async function verificarNovamente() {
-    if (await isPortInUse(porta)) {
+    const [portaAtiva, httpAtivo] = await Promise.all([
+      isPortInUse(porta),
+      isLocalHttpServiceReachable({ timeoutMs: Math.min(intervalMs, 3000) }),
+    ]);
+
+    if (portaAtiva || httpAtivo) {
       return true;
     }
 
@@ -101,14 +127,24 @@ async function iniciarMyZap(dirPath, options = {}) {
       dirPath,
       porta,
     });
-    const estaRodando = await isPortInUse(porta);
+    const [portaAtiva, httpAtivo] = await Promise.all([
+      isPortInUse(porta),
+      isLocalHttpServiceReachable({ timeoutMs: 3000 }),
+    ]);
+    const estaRodando = portaAtiva || httpAtivo;
 
     if (estaRodando) {
-      transition('running', { message: 'MyZap ja estava em execucao local.', dirPath, porta });
+      transition('running', {
+        message: 'MyZap ja estava em execucao local.',
+        dirPath,
+        porta,
+        detectadoVia: portaAtiva ? 'porta' : 'http',
+      });
       reportProgress('MyZap ja estava em execucao local.', 'already_running', {
         percent: 95,
         dirPath,
         porta,
+        detectadoVia: portaAtiva ? 'porta' : 'http',
       });
       return {
         status: 'success',
@@ -116,19 +152,24 @@ async function iniciarMyZap(dirPath, options = {}) {
       };
     }
 
-    reportProgress('Atualizando codigo local do MyZap (git pull)...', 'git_pull', {
-      percent: 90,
-      dirPath,
-    });
     const gitDir = path.join(dirPath, '.git');
-    if (fs.existsSync(gitDir)) {
+    const gitRunner = await getGitCommand();
+    if (fs.existsSync(gitDir) && gitRunner) {
+      reportProgress('Atualizando codigo local do MyZap...', 'git_pull', {
+        percent: 90,
+        dirPath,
+      });
       try {
-        await executarComando('git', ['pull', 'origin', 'main'], dirPath);
+        await executarComando(gitRunner, ['pull', 'origin', 'main'], dirPath);
       } catch (gitErr) {
         info('git pull falhou (nao-critico, continuando)', {
           metadata: { area: 'iniciarMyZap', error: getErrorMessage(gitErr) },
         });
       }
+    } else if (fs.existsSync(gitDir)) {
+      info('Diretorio .git encontrado, mas Git nao esta disponivel. Pulando git pull.', {
+        metadata: { area: 'iniciarMyZap', dirPath },
+      });
     } else {
       info('Diretorio .git nao encontrado, pulando git pull', {
         metadata: { area: 'iniciarMyZap', dirPath },
@@ -153,6 +194,7 @@ async function iniciarMyZap(dirPath, options = {}) {
       env: pnpmRunner.env,
       detached: false,
       windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     // Rastrear child process para kill posterior

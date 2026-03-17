@@ -19,12 +19,21 @@ const PROGRESS_POLL_INTERVAL_MS = 1000;
 const STALE_PROGRESS_HIDE_MS = 15 * 60 * 1000;
 
 let myzapProgressPollTimer = null;
+let connectionStatusPollTimer = null;
 let qrPollingTimer = null;
 let qrPollingAttempts = 0;
 let lastConfigDebugPayload = null;
 let currentCapabilityState = {
   preferences: {},
   snapshot: {}
+};
+let currentPrivilegeStatus = {
+  platform: '',
+  isElevated: false,
+  requiresAdminForLocalInstall: false,
+  needsAdminForLocalInstall: false,
+  method: '',
+  message: ''
 };
 const QR_POLL_INTERVAL_MS = 3000;
 const QR_POLL_MAX_ATTEMPTS = 40; // ~120s total
@@ -141,6 +150,100 @@ function clampPercent(value) {
   return Math.max(0, Math.min(100, Math.round(numeric)));
 }
 
+function normalizePrivilegeStatus(payload = {}) {
+  return {
+    platform: String(payload?.platform || ''),
+    isElevated: Boolean(payload?.isElevated),
+    requiresAdminForLocalInstall: Boolean(payload?.requiresAdminForLocalInstall),
+    needsAdminForLocalInstall: Boolean(payload?.needsAdminForLocalInstall),
+    method: String(payload?.method || ''),
+    message: String(payload?.message || '')
+  };
+}
+
+function buildAdminRequiredInstallMessage(actionLabel = 'instalar ou reinstalar o MyZap local') {
+  return `Para ${actionLabel}, feche o Gerenciador MyZap e abra novamente como Administrador.`;
+}
+
+async function refreshPrivilegeStatus() {
+  if (!window.api?.getPrivilegeStatus) {
+    currentPrivilegeStatus = normalizePrivilegeStatus();
+    return currentPrivilegeStatus;
+  }
+
+  try {
+    currentPrivilegeStatus = normalizePrivilegeStatus(await window.api.getPrivilegeStatus());
+  } catch (err) {
+    console.warn('Falha ao verificar privilegios do processo atual:', err?.message || err);
+    currentPrivilegeStatus = normalizePrivilegeStatus();
+  }
+
+  return currentPrivilegeStatus;
+}
+
+function needsAdminForLocalInstall(privilegeStatus = currentPrivilegeStatus) {
+  return Boolean(
+    privilegeStatus?.requiresAdminForLocalInstall
+    && privilegeStatus?.needsAdminForLocalInstall
+  );
+}
+
+function setBadgeState(element, text, className) {
+  if (!element) return;
+  element.textContent = text;
+  element.className = className;
+}
+
+function applyAdminGuardToLocalInstallUi(options = {}) {
+  const {
+    installed = false,
+    remoteConfigOk = true,
+    modoLocal = true
+  } = options;
+
+  if (!remoteConfigOk || !modoLocal || !needsAdminForLocalInstall()) {
+    return false;
+  }
+
+  if (installed) {
+    return false;
+  }
+
+  const message = currentPrivilegeStatus.message || buildAdminRequiredInstallMessage('instalar o MyZap local');
+  const statusInstallation = document.getElementById('status-installation');
+  const statusApi = document.getElementById('status-api');
+  const btnInstall = document.getElementById('btn-install');
+  const btnSaveAndInstall = document.getElementById('btn-save-and-install');
+  const btnInstallAgain = document.getElementById('btn-install-again');
+  const btnStart = document.getElementById('btn-start');
+
+  setBadgeState(statusInstallation, message, 'badge bg-warning text-dark status-badge');
+  setBadgeState(statusApi, 'Instalacao local bloqueada ate abrir o app como Administrador.', 'badge bg-warning text-dark status-badge');
+
+  if (btnInstall) btnInstall.disabled = true;
+  if (btnSaveAndInstall) btnSaveAndInstall.disabled = true;
+  if (btnInstallAgain) btnInstallAgain.disabled = true;
+  if (btnStart) btnStart.disabled = true;
+
+  return true;
+}
+
+async function ensureAdminForLocalInstall(actionLabel = 'instalar o MyZap local') {
+  const privilegeStatus = await refreshPrivilegeStatus();
+  if (!needsAdminForLocalInstall(privilegeStatus)) {
+    return true;
+  }
+
+  const message = privilegeStatus.message || buildAdminRequiredInstallMessage(actionLabel);
+  const statusInstallation = document.getElementById('status-installation');
+  const statusApi = document.getElementById('status-api');
+
+  setBadgeState(statusInstallation, message, 'badge bg-warning text-dark status-badge');
+  setBadgeState(statusApi, message, 'badge bg-warning text-dark status-badge');
+  alert(message);
+  return false;
+}
+
 function getProgressPercentByPhase(phase) {
   const map = {
     start: 5,
@@ -164,6 +267,7 @@ function getProgressPercentByPhase(phase) {
     start_confirmed: 95,
     sync_ia: 97,
     already_running: 95,
+    admin_required: 100,
     done: 100,
     error: 100,
     mode_web: 100
@@ -198,6 +302,7 @@ function getProgressPhaseLabel(phase) {
     start_confirmed: 'confirmacao',
     sync_ia: 'sync ia',
     already_running: 'ja em execucao',
+    admin_required: 'permissao',
     done: 'concluido',
     error: 'erro',
     mode_web: 'modo online'
@@ -571,12 +676,44 @@ function startConfigAutoRefresh() {
   }, CONFIG_SYNC_INTERVAL_MS);
 }
 
+function startConnectionStatusPolling() {
+  if (connectionStatusPollTimer) return;
+
+  connectionStatusPollTimer = setInterval(() => {
+    checkConnection().catch((err) => {
+      console.warn('Falha no refresh automatico do status MyZap:', err?.message || err);
+    });
+  }, STATUS_WATCH_INTERVAL_MS);
+}
+
+function stopConnectionStatusPolling() {
+  if (!connectionStatusPollTimer) return;
+  clearInterval(connectionStatusPollTimer);
+  connectionStatusPollTimer = null;
+}
+
 
 (async () => {
   try {
+    await refreshPrivilegeStatus();
+
     // Se usuario removeu tudo anteriormente, manter estado entre reaberturas do app
     const userRemoved = await window.api.getStore('myzap_userRemovedLocal');
     if (userRemoved === true) {
+      if (needsAdminForLocalInstall()) {
+        setPanelVisible(false);
+        setResetFeedback({
+          show: true,
+          type: 'warning',
+          icon: '',
+          title: 'Abra o app como Administrador',
+          message: currentPrivilegeStatus.message || buildAdminRequiredInstallMessage('instalar o MyZap local'),
+          details: 'Feche o Gerenciador MyZap, abra novamente como Administrador e tente a reinstalacao local.',
+          showInstallAgain: false
+        });
+        return;
+      }
+
       setPanelVisible(false);
       setResetFeedback({
         show: true,
@@ -605,6 +742,7 @@ async function loadConfigs() {
       configIntro.innerHTML = 'Preencha o <strong>TOKEN</strong> antes de instalar o MyZap. As demais configuracoes (Session Key, diretorio, modo e features opcionais) sao sincronizadas automaticamente da API do backend da empresa.';
     }
     const autoConfig = await window.api.prepareMyZapAutoConfig(true);
+    await refreshPrivilegeStatus();
     await refreshCapabilityState();
     await atualizarDebugConfigPainel(autoConfig);
     const remoteConfigOk = autoConfig?.status !== 'error';
@@ -676,13 +814,20 @@ async function loadConfigs() {
       const hasFiles = await window.api.checkDirectoryHasFiles(
         String(myzap_diretorio)
       );
+      const isInstalled = hasFiles.status === 'success';
       statusInstallation.textContent = hasFiles.message || 'Erro na configuracao!';
       statusInstallation.classList.remove('bg-secondary');
-      statusInstallation.classList.add(hasFiles.status === 'success' ? 'bg-success' : 'bg-danger');
-      setInstalled(hasFiles.status === 'success');
+      statusInstallation.classList.add(isInstalled ? 'bg-success' : 'bg-danger');
+      setInstalled(isInstalled);
       btnStart.disabled = false;
 
-      if (hasFiles.status === 'success') {
+      applyAdminGuardToLocalInstallUi({
+        installed: isInstalled,
+        remoteConfigOk: myzap_remoteConfigOk,
+        modoLocal
+      });
+
+      if (isInstalled) {
         statusApi.innerHTML = `
               <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
               Verificando...
@@ -721,9 +866,9 @@ async function loadConfigs() {
       document.getElementById('myzap-sessionname').placeholder = 'Carregado automaticamente da API';
     }
     if (modoLocal && myzap_sessionKey) {
-      setInterval(async () => {
-        await checkConnection();
-      }, STATUS_WATCH_INTERVAL_MS);
+      startConnectionStatusPolling();
+    } else {
+      stopConnectionStatusPolling();
     }
 
     if (document.getElementById('myzap-mensagem-padrao')) document.getElementById('myzap-mensagem-padrao').value = myzap_mensagemPadrao;
@@ -1315,6 +1460,14 @@ cfg_myzap.onsubmit = async (e) => {
 async function salvarEInstalar() {
   // 1. Salvar segredos primeiro
   const btnInstall = document.getElementById('btn-save-and-install');
+  if (!(await ensureAdminForLocalInstall('instalar o MyZap local'))) {
+    if (btnInstall) {
+      btnInstall.disabled = false;
+      btnInstall.textContent = '🚀 Salvar e Instalar';
+    }
+    return;
+  }
+
   if (btnInstall) {
     btnInstall.disabled = true;
     btnInstall.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Salvando...`;
@@ -1391,6 +1544,16 @@ async function iniciarMyZapServico() {
     return;
   }
 
+  const myzap_diretorio = (await window.api.getStore('myzap_diretorio')) ?? '';
+  const hasFiles = myzap_diretorio
+    ? await window.api.checkDirectoryHasFiles(String(myzap_diretorio))
+    : { status: 'error' };
+
+  if (hasFiles.status !== 'success' && !(await ensureAdminForLocalInstall('instalar o MyZap local'))) {
+    btnStart.disabled = true;
+    return;
+  }
+
   btnStart.disabled = true;
   statusApi.innerHTML = `
     <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
@@ -1442,6 +1605,10 @@ async function installMyZap() {
 
   if (!myzap_diretorio) {
     alert('Por favor, salve as configuracoes antes de instalar o MyZap.');
+    return;
+  }
+
+  if (!(await ensureAdminForLocalInstall('instalar o MyZap local'))) {
     return;
   }
 
@@ -1508,6 +1675,10 @@ async function reinstallMyZap() {
 
   if (!myzap_diretorio) {
     alert('Por favor, salve as configuracoes antes de re-instalar o MyZap.');
+    return;
+  }
+
+  if (!(await ensureAdminForLocalInstall('reinstalar o MyZap local'))) {
     return;
   }
 
@@ -1745,6 +1916,14 @@ async function removerTudoMyZap() {
 
 async function instalarNovamente() {
   const btnAgain = document.getElementById('btn-install-again');
+  if (!(await ensureAdminForLocalInstall('instalar o MyZap local'))) {
+    if (btnAgain) {
+      btnAgain.disabled = false;
+      btnAgain.textContent = 'Instalar Novamente';
+    }
+    return;
+  }
+
   if (btnAgain) {
     btnAgain.disabled = true;
     btnAgain.innerHTML = `

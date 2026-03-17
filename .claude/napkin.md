@@ -15,6 +15,8 @@
 ## Shell & Command Reliability
 1. **[2026-03-16] Bash do terminal integrado expande `!` em scripts inline**
    Do instead: evitar `!` em `node -e` ou montar o script com aspas que nao acionem history expansion.
+2. **[2026-03-16] `electron-builder --dir` pode falhar no Windows por symlink do cache winCodeSign**
+   Do instead: rodar o build com privilegio elevado ou habilitar o Developer Mode do Windows antes de empacotar.
 
 ## Domain Behavior Guardrails
 1. **[2026-03-16] Instalacoes por arquivo compactado nao possuem `.git`**

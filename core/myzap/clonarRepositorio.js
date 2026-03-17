@@ -1,7 +1,12 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const { error: logError, warn, info } = require('./myzapLogger');
-const { killProcessesOnPort, getPnpmCommand } = require('./processUtils');
+const {
+  killProcessesOnPort,
+  getPnpmCommand,
+  getPrivilegeStatus,
+  buildAdminRequiredMessage,
+} = require('./processUtils');
 const { iniciarMyZap } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
@@ -65,6 +70,42 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     const reportProgress = (typeof options.onProgress === 'function')
       ? options.onProgress
       : () => {};
+
+    const privilegeStatus = getPrivilegeStatus();
+    if (privilegeStatus.requiresAdminForLocalInstall && !privilegeStatus.isElevated) {
+      const message = buildAdminRequiredMessage(
+        reinstall ? 'reinstalar o MyZap local' : 'instalar o MyZap local',
+      );
+
+      warn('Instalacao local do MyZap bloqueada por falta de privilegios de administrador', {
+        metadata: {
+          area: 'clonarRepositorio',
+          dirPath,
+          reinstall,
+          privilegeStatus,
+        },
+      });
+
+      reportProgress(message, 'admin_required', {
+        dirPath,
+        reinstall,
+        privilegeStatus,
+        percent: 100,
+      });
+      transition('error', {
+        message,
+        dirPath,
+        reinstall,
+        privilegeStatus,
+      });
+
+      return {
+        status: 'error',
+        requiresAdmin: true,
+        privilegeStatus,
+        message,
+      };
+    }
 
     reportProgress('Preparando instalacao automatica do MyZap...', 'precheck', {
       percent: 10,

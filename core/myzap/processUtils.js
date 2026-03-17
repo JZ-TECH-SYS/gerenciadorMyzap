@@ -1,8 +1,10 @@
-const { execSync, spawn } = require('child_process');
+const { execSync, spawn, spawnSync } = require('child_process');
 const net = require('net');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+
+const DEFAULT_LOCAL_HTTP_URLS = ['http://127.0.0.1:5555/', 'http://localhost:5555/'];
 
 function isPortInUse(port) {
   return new Promise((resolve) => {
@@ -196,6 +198,260 @@ const KNOWN_PATHS_WIN = {
   ],
 };
 
+function isElectronPackagedApp() {
+  return Boolean(
+    process.versions
+    && process.versions.electron
+    && !process.defaultApp
+    && process.resourcesPath,
+  );
+}
+
+function ensureDirectoryInPath(filePath) {
+  if (!filePath) {
+    return;
+  }
+
+  const dir = path.dirname(filePath);
+  const separator = os.platform() === 'win32' ? ';' : ':';
+  const currentPath = String(process.env.PATH || '');
+  const currentEntries = currentPath.split(separator).filter(Boolean);
+
+  if (!currentEntries.includes(dir)) {
+    process.env.PATH = currentPath ? `${dir}${separator}${currentPath}` : dir;
+  }
+}
+
+function getKnownCommandPath(command) {
+  if (os.platform() !== 'win32') {
+    return null;
+  }
+
+  const knownPaths = KNOWN_PATHS_WIN[command] || [];
+  const existingPath = knownPaths.find((filePath) => {
+    try {
+      return fs.existsSync(filePath);
+    } catch (_err) {
+      return false;
+    }
+  });
+
+  if (existingPath) {
+    ensureDirectoryInPath(existingPath);
+  }
+
+  return existingPath || null;
+}
+
+function normalizeBaseUrl(url) {
+  const value = String(url || '').trim();
+  if (!value) return '';
+  return value.endsWith('/') ? value : `${value}/`;
+}
+
+function uniqueUrls(urls = []) {
+  const output = [];
+  const seen = new Set();
+
+  urls.forEach((rawUrl) => {
+    const normalized = normalizeBaseUrl(rawUrl);
+    if (!normalized) {
+      return;
+    }
+
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    output.push(normalized);
+  });
+
+  return output;
+}
+
+function runSyncCommand(command, args = []) {
+  try {
+    const result = spawnSync(command, args, {
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+    });
+
+    return {
+      ok: !result.error && result.status === 0,
+      status: result.status,
+      stdout: String(result.stdout || '').trim(),
+      stderr: String(result.stderr || '').trim(),
+      error: result.error || null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: null,
+      stdout: '',
+      stderr: '',
+      error,
+    };
+  }
+}
+
+function detectWindowsElevation() {
+  const powershellResult = runSyncCommand('powershell.exe', [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    '[Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent() | ForEach-Object { $_.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }',
+  ]);
+
+  if (/^true$/i.test(powershellResult.stdout)) {
+    return { isElevated: true, method: 'powershell' };
+  }
+
+  if (/^false$/i.test(powershellResult.stdout)) {
+    return { isElevated: false, method: 'powershell' };
+  }
+
+  const fltmcResult = runSyncCommand('fltmc');
+  if (fltmcResult.ok) {
+    return { isElevated: true, method: 'fltmc' };
+  }
+
+  const fltmcOutput = `${fltmcResult.stdout}\n${fltmcResult.stderr}`.toLowerCase();
+  if (
+    fltmcOutput.includes('access is denied')
+    || fltmcOutput.includes('acesso negado')
+    || fltmcOutput.includes('privilege')
+  ) {
+    return { isElevated: false, method: 'fltmc' };
+  }
+
+  const netSessionResult = runSyncCommand('net', ['session']);
+  if (netSessionResult.ok) {
+    return { isElevated: true, method: 'net-session' };
+  }
+
+  const netOutput = `${netSessionResult.stdout}\n${netSessionResult.stderr}`.toLowerCase();
+  if (
+    netOutput.includes('access is denied')
+    || netOutput.includes('acesso negado')
+    || netOutput.includes('privilege')
+  ) {
+    return { isElevated: false, method: 'net-session' };
+  }
+
+  return { isElevated: false, method: 'fallback_unknown' };
+}
+
+function buildAdminRequiredMessage(action = 'instalar ou reinstalar o MyZap local') {
+  return `Para ${action}, feche o Gerenciador MyZap e abra novamente como Administrador.`;
+}
+
+function getPrivilegeStatus() {
+  const platform = os.platform();
+
+  if (platform === 'win32') {
+    const detected = detectWindowsElevation();
+    const needsAdminForLocalInstall = !detected.isElevated;
+
+    return {
+      platform,
+      isElevated: Boolean(detected.isElevated),
+      requiresAdminForLocalInstall: true,
+      needsAdminForLocalInstall,
+      method: detected.method || 'unknown',
+      message: needsAdminForLocalInstall ? buildAdminRequiredMessage() : '',
+    };
+  }
+
+  if (typeof process.getuid === 'function') {
+    return {
+      platform,
+      isElevated: process.getuid() === 0,
+      requiresAdminForLocalInstall: false,
+      needsAdminForLocalInstall: false,
+      method: 'getuid',
+      message: '',
+    };
+  }
+
+  return {
+    platform,
+    isElevated: false,
+    requiresAdminForLocalInstall: false,
+    needsAdminForLocalInstall: false,
+    method: 'unsupported',
+    message: '',
+  };
+}
+
+function resolveCommandPath(command) {
+  return new Promise((resolve) => {
+    const checker = os.platform() === 'win32' ? 'where' : 'which';
+    const child = spawn(checker, [command], {
+      shell: false,
+      windowsHide: true,
+    });
+    let stdout = '';
+
+    const resolveKnownPath = () => {
+      resolve(getKnownCommandPath(command));
+    };
+
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    child.on('error', resolveKnownPath);
+    child.on('close', (code) => {
+      if (code === 0) {
+        const resolvedPath = stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean);
+
+        if (resolvedPath) {
+          ensureDirectoryInPath(resolvedPath);
+          resolve(resolvedPath);
+          return;
+        }
+      }
+
+      resolveKnownPath();
+    });
+  });
+}
+
+async function isLocalHttpServiceReachable(options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 2500;
+  const baseUrls = uniqueUrls([...(options.baseUrls || []), ...DEFAULT_LOCAL_HTTP_URLS]);
+  let index = 0;
+
+  while (index < baseUrls.length) {
+    const baseUrl = baseUrls[index];
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
+
+    try {
+      await fetch(baseUrl, {
+        method: 'GET',
+        signal: abort.signal,
+      });
+      clearTimeout(timer);
+      return true;
+    } catch (_err) {
+      clearTimeout(timer);
+      index += 1;
+    }
+  }
+
+  return false;
+}
+
 function resolveAsarUnpackedPath(filePath) {
   if (typeof filePath !== 'string' || filePath.length === 0) {
     return filePath;
@@ -214,6 +470,10 @@ function getBundledPnpmCommand() {
   try {
     const packageJsonPath = require.resolve('pnpm');
     const cliPath = resolveAsarUnpackedPath(path.join(path.dirname(packageJsonPath), 'bin', 'pnpm.cjs'));
+    if (isElectronPackagedApp() && cliPath.includes(`${path.sep}app.asar${path.sep}`)) {
+      return null;
+    }
+
     if (!fs.existsSync(cliPath)) {
       return null;
     }
@@ -233,34 +493,8 @@ function getBundledPnpmCommand() {
   }
 }
 
-function commandExists(command) {
-  return new Promise((resolve) => {
-    const checker = os.platform() === 'win32' ? 'where' : 'which';
-    const child = spawn(checker, [command], { shell: false });
-    child.on('error', () => resolve(false));
-    child.on('close', (code) => {
-      if (code === 0) return resolve(true);
-
-      // Fallback Windows: verificar caminhos conhecidos de instalacao
-      if (os.platform() === 'win32') {
-        const knownPaths = KNOWN_PATHS_WIN[command];
-        if (knownPaths) {
-          for (const p of knownPaths) {
-            try {
-              if (fs.existsSync(p)) {
-                const dir = path.dirname(p);
-                if (!process.env.PATH.includes(dir)) {
-                  process.env.PATH = `${dir};${process.env.PATH}`;
-                }
-                return resolve(true);
-              }
-            } catch (_e) { /* ignora */ }
-          }
-        }
-      }
-      resolve(false);
-    });
-  });
+async function commandExists(command) {
+  return Boolean(await resolveCommandPath(command));
 }
 
 /**
@@ -303,33 +537,40 @@ async function getPnpmCommand() {
     return bundledRunner;
   }
 
-  if (await commandExists('pnpm')) {
+  if (isElectronPackagedApp()) {
+    return null;
+  }
+
+  const pnpmPath = await resolveCommandPath('pnpm');
+  if (pnpmPath) {
     return {
-      command: 'pnpm',
+      command: pnpmPath,
       prefixArgs: [],
-      shell: true,
+      shell: false,
       env: process.env,
       source: 'system-pnpm',
     };
   }
 
   // npx vem com o npm e e a forma mais comum de rodar pnpm sem instalar globalmente
-  if (await commandExists('npx')) {
+  const npxPath = await resolveCommandPath('npx');
+  if (npxPath) {
     return {
-      command: 'npx',
+      command: npxPath,
       prefixArgs: ['pnpm'],
-      shell: true,
+      shell: false,
       env: process.env,
       source: 'system-npx',
     };
   }
 
   // npm disponivel mas npx nao (npm < 5.2) — tenta via npm exec
-  if (await commandExists('npm')) {
+  const npmPath = await resolveCommandPath('npm');
+  if (npmPath) {
     return {
-      command: 'npm',
+      command: npmPath,
       prefixArgs: ['exec', 'pnpm', '--'],
-      shell: true,
+      shell: false,
       env: process.env,
       source: 'system-npm-exec',
     };
@@ -338,10 +579,30 @@ async function getPnpmCommand() {
   return null;
 }
 
+async function getGitCommand() {
+  const gitPath = await resolveCommandPath('git');
+  if (!gitPath) {
+    return null;
+  }
+
+  return {
+    command: gitPath,
+    prefixArgs: [],
+    shell: false,
+    env: process.env,
+    source: 'system-git',
+  };
+}
+
 module.exports = {
   isPortInUse,
+  isLocalHttpServiceReachable,
   killProcessesOnPort,
+  getPrivilegeStatus,
+  buildAdminRequiredMessage,
   commandExists,
+  resolveCommandPath,
   getPnpmCommand,
+  getGitCommand,
   refreshPathWindows,
 };

@@ -50,8 +50,8 @@ const {
   getCapabilitySnapshotPayload,
   saveCapabilityPreferences
 } = require('./core/myzap/capabilities');
-const { clearProgress, getCurrentProgress } = require('./core/myzap/progress');
-const { killProcessesOnPort, isPortInUse } = require('./core/myzap/processUtils');
+const { clearProgress, getCurrentProgress, finishProgressSuccess } = require('./core/myzap/progress');
+const { killProcessesOnPort, isPortInUse, isLocalHttpServiceReachable } = require('./core/myzap/processUtils');
 const { killMyZapProcess } = require('./core/myzap/iniciarMyZap');
 const deleteSession = require('./core/myzap/api/deleteSession');
 const { info: myzapInfo, warn: myzapWarn, error: myzapError } = require('./core/myzap/myzapLogger');
@@ -83,8 +83,10 @@ let queueAutoStartTimer = null;
 let myzapEnsureLoopTimer = null;
 let myzapManualUpdateInProgress = false;
 let lastKnownModoIntegracao = null;
+let lastAdminRequiredToastAt = 0;
 const MYZAP_CONFIG_REFRESH_MS = 30 * 1000;
-const MYZAP_ENSURE_LOOP_MS = 20 * 1000;
+const MYZAP_ENSURE_LOOP_MS = 60 * 1000;
+const ADMIN_REQUIRED_TOAST_INTERVAL_MS = 10 * 60 * 1000;
 
 function toast(msg) {
   new Notification({
@@ -92,6 +94,26 @@ function toast(msg) {
     body: msg,
     icon: path.join(__dirname, 'assets/icon.png')
   }).show();
+}
+
+function notifyAdminRequired(result, context = 'runtime') {
+  if (!result?.requiresAdmin) {
+    return;
+  }
+
+  const now = Date.now();
+  if ((now - lastAdminRequiredToastAt) < ADMIN_REQUIRED_TOAST_INTERVAL_MS) {
+    return;
+  }
+
+  lastAdminRequiredToastAt = now;
+  toast(result.message || 'Abra o Gerenciador MyZap como Administrador para concluir a instalacao local do MyZap.');
+  myzapWarn('MyZap: instalacao local bloqueada por falta de privilegios de administrador', {
+    metadata: {
+      context,
+      result,
+    }
+  });
 }
 
 function hasValidConfigMyZap() {
@@ -346,15 +368,36 @@ async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
   }
 
   try {
-    const portaAtiva = await isPortInUse(5555);
-    if (portaAtiva) {
+    const [portaAtiva, httpAtivo] = await Promise.all([
+      isPortInUse(5555),
+      isLocalHttpServiceReachable({ timeoutMs: 3000 }),
+    ]);
+    if (portaAtiva || httpAtivo) {
       // Garante que a state machine reflete o estado real (ex: porta subiu
       // apos timeout anterior ter marcado 'error')
       const { getState, forceTransition } = require('./core/myzap/stateMachine');
       if (getState() !== 'running') {
-        forceTransition('running', { message: 'MyZap local ativo (detectado via porta 5555).', porta: 5555 });
+        forceTransition('running', {
+          message: 'MyZap local ativo (detectado automaticamente).',
+          porta: 5555,
+          detectadoVia: portaAtiva ? 'porta' : 'http',
+        });
       }
-      return { status: 'success', message: 'MyZap local ja ativo.' };
+
+      const progress = getCurrentProgress();
+      if (progress && progress.active) {
+        finishProgressSuccess('MyZap local ja estava ativo.', 'runtime_detected', {
+          trigger,
+          detectadoVia: portaAtiva ? 'porta' : 'http',
+          porta: 5555,
+        });
+      }
+
+      return {
+        status: 'success',
+        message: 'MyZap local ja ativo.',
+        detectadoVia: portaAtiva ? 'porta' : 'http',
+      };
     }
 
     myzapInfo('MyZap auto-ensure: porta local fechada, tentando iniciar automaticamente', {
@@ -362,6 +405,11 @@ async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
     });
 
     const result = await ensureMyZapReadyAndStart({ forceRemote: false });
+    if (result?.requiresAdmin) {
+      notifyAdminRequired(result, `ensure:${trigger}`);
+      return result;
+    }
+
     applyMyZapRuntimeByMode(trigger);
     return result;
   } catch (err) {
@@ -414,6 +462,7 @@ async function updateMyZapNow() {
 
   try {
     const result = await ensureMyZapReadyAndStart({ forceRemote: true });
+    notifyAdminRequired(result, 'manual_update');
     applyMyZapRuntimeByMode('manual_update');
 
     if (result?.status === 'success' && result?.skippedLocalStart) {
@@ -471,6 +520,8 @@ async function autoStartMyZap() {
       result = await ensureMyZapReadyAndStart({ forceRemote: false });
     }
 
+    notifyAdminRequired(result, 'auto_start');
+
     if (result.status === 'success' && result?.skippedLocalStart) {
       myzapInfo('MyZap em modo web/online. Execucao local desativada.', {
         metadata: { modo: getModoIntegracaoMyZap() }
@@ -505,6 +556,7 @@ async function refreshMyZapConfigPeriodicamente() {
     if (modoAntes !== 'local' && modoDepois === 'local') {
       myzapInfo('MyZap: modo alterado para local/fila. Iniciando ambiente local automaticamente.');
       const startResult = await ensureMyZapReadyAndStart({ forceRemote: false });
+      notifyAdminRequired(startResult, 'config_refresh_mode_switch');
       if (startResult?.status !== 'success') {
         myzapWarn('MyZap: falha ao iniciar ambiente local apos troca de modo', {
           metadata: { startResult }

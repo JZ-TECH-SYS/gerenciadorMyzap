@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   iniciarMyZap: (dirPath) => ipcRenderer.invoke('myzap:iniciarMyZap', dirPath),
   prepareMyZapAutoConfig: (forceRemote = false) => ipcRenderer.invoke('myzap:prepareAutoConfig', forceRemote),
   getAutoConfigDebug: () => ipcRenderer.invoke('myzap:getAutoConfigDebug'),
+  getPrivilegeStatus: () => ipcRenderer.invoke('myzap:getPrivilegeStatus'),
   ensureMyZapStarted: (forceRemote = false) => ipcRenderer.invoke('myzap:ensureStarted', forceRemote),
   getConnectionStatus: () => ipcRenderer.invoke('myzap:getConnectionStatus'),
   verifyRealStatus: () => ipcRenderer.invoke('myzap:verifyRealStatus'),
