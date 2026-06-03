@@ -334,19 +334,33 @@ function registerMyZapHandlers(ipcMain) {
         try {
             const logDir = getLogDir();
             const today = new Date().toISOString().split('T')[0];
-            const logFile = path.join(logDir, `${today}-log-myzap.jsonl`);
-            if (!fs.existsSync(logFile)) return [];
-            const content = fs.readFileSync(logFile, 'utf8');
-            const lines = content.trim().split('\n').filter(Boolean);
-            // Filtrar apenas logs da fila (whatsappQueueWatcher / [FilaMyZap])
-            const parsed = lines.map((line) => {
-                try { return JSON.parse(line); } catch (_e) { return null; }
-            }).filter(Boolean);
+            // Lê tanto o canal 'myzap' (envio) quanto o 'backend' (chamadas a API),
+            // pois os logs de busca de pendentes / atualizacao de status passaram
+            // para o canal backend e antes sumiam deste painel.
+            const arquivos = [
+                path.join(logDir, `${today}-log-myzap.jsonl`),
+                path.join(logDir, `${today}-log-backend.jsonl`),
+            ];
+            const parsed = [];
+            for (const logFile of arquivos) {
+                if (!fs.existsSync(logFile)) continue;
+                const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+                for (const line of lines) {
+                    try { parsed.push(JSON.parse(line)); } catch (_e) { /* ignora linha invalida */ }
+                }
+            }
+            // Filtra apenas o que é relevante à fila (worker + chamadas ao backend).
             const filaOnly = parsed.filter((e) => {
                 const msg = e.message || '';
                 const area = e.metadata?.area || '';
-                return msg.includes('[FilaMyZap]') || area === 'whatsappQueueWatcher';
+                const categoria = e.metadata?.categoria || '';
+                return msg.includes('[FilaMyZap]')
+                    || msg.includes('[Backend]')
+                    || area === 'whatsappQueueWatcher'
+                    || ['fila', 'envio', 'conexao', 'erro'].includes(categoria);
             });
+            // Ordena por timestamp (mescla os dois arquivos) e pega as últimas linhas.
+            filaOnly.sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
             return filaOnly.slice(-maxLines);
         } catch (error) {
             warn('Falha ao ler logs da fila MyZap via IPC', {

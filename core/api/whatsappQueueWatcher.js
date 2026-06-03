@@ -23,7 +23,7 @@ const DEFAULT_ITEM_DELAY_MAX_MS = 1500;
 
 // Reconexao: backoff simples enquanto o MyZap estiver indisponivel.
 const BACKOFF_BASE_MS = LOOP_INTERVAL_MS;
-const BACKOFF_MAX_MS = 60000;
+const BACKOFF_MAX_MS = 30000;
 
 // Chave no electron-store para persistir o ultimo erro de envio/ciclo.
 const STORE_ULTIMO_ERRO_KEY = 'myzap_queueWatcherUltimoErro';
@@ -37,8 +37,13 @@ function clampNumber(value, fallback) {
 }
 
 function getItemDelayConfig() {
+  // Teto de seguranca: mesmo com config alta, o atraso por item fica limitado
+  // para o ciclo nao se aproximar do PROCESSANDO_TIMEOUT_MS em lotes grandes.
+  const TETO_MS = 8000;
   let min = clampNumber(store.get('myzap_itemDelayMinMs'), DEFAULT_ITEM_DELAY_MIN_MS);
   let max = clampNumber(store.get('myzap_itemDelayMaxMs'), DEFAULT_ITEM_DELAY_MAX_MS);
+  min = Math.min(min, TETO_MS);
+  max = Math.min(max, TETO_MS);
   if (max < min) max = min;
   return { min, max };
 }
@@ -73,8 +78,9 @@ function truncarResposta(resposta) {
 
 /**
  * Aplica backoff exponencial simples (com teto) para a proxima rodada efetiva,
- * com base na quantidade de skips consecutivos. Nao interrompe o loop: apenas
- * adia o proximo processamento real, mantendo as checagens de disponibilidade.
+ * com base na quantidade de skips consecutivos. O loop continua rodando a cada
+ * 3s, mas o ciclo so volta a processar/checar apos a janela de backoff expirar
+ * (recuperacao com latencia de ate BACKOFF_MAX_MS).
  */
 function aplicarBackoff() {
   const fator = Math.min(consecutiveSkips, 6); // limita o expoente
@@ -261,8 +267,13 @@ async function atualizarStatusFila(apiBaseUrl, token, payload, detalheErro = nul
 function pareceNumeroInvalido(body) {
   const txt = String(body?.error || body?.message || body?.result || '').toLowerCase();
   if (!txt) return false;
-  return /n[uú]mero|number|exist|whatsapp|invalid|inv[aá]lid/.test(txt)
-    && /(does not exist|not exist|nao existe|n[aã]o existe|invalid|inv[aá]lid|not on whatsapp|sem whatsapp)/.test(txt);
+  // Exclui erros de sessao/credencial/payload, que NAO sao do numero do destinatario.
+  if (/(session|sess[aã]o|token|apitoken|api token|parameter|par[aâ]metro|credential|credencial|unauthorized|n[aã]o autorizad|forbidden)/.test(txt)) {
+    return false;
+  }
+  const temContextoNumero = /(n[uú]mero|number|phone|telefone|whatsapp|destinat)/.test(txt);
+  const temInexistencia = /(does not exist|not exist|n[aã]o existe|nao existe|not on whatsapp|sem whatsapp|invalid number|n[uú]mero inv[aá]lid|invalid wa|not a valid|nao e um numero|n[aã]o registrad)/.test(txt);
+  return temContextoNumero && temInexistencia;
 }
 
 /**
@@ -483,8 +494,9 @@ async function processarFilaUmaRodada() {
   }
 
   // Backoff de reconexao: enquanto o MyZap esteve indisponivel, espacamos as
-  // tentativas (sem parar de checar). O loop continua rodando a cada 3s, mas
-  // so processa de fato apos o atraso acumulado expirar.
+  // tentativas para nao acumular skips rapido demais (evita o auto-stop). Durante
+  // a janela de backoff o ciclo NAO checa disponibilidade; a recuperacao tem
+  // latencia de ate BACKOFF_MAX_MS apos o MyZap voltar.
   if (backoffAteEm && Date.now() < backoffAteEm) {
     return;
   }
@@ -574,6 +586,17 @@ async function processarFilaUmaRodada() {
     for (let i = 0; i < lote.length; i++) {
       const mensagem = lote[i];
       if (!ativo) break;
+
+      // Salvaguarda: nao deixa o ciclo ultrapassar o timeout de re-entrada
+      // (PROCESSANDO_TIMEOUT_MS). Sem isso, o delay de humanizacao em lotes
+      // grandes poderia abrir um 2o ciclo concorrente -> reenvio duplicado.
+      // Deixa margem de um FETCH_TIMEOUT para o item em voo terminar.
+      if (Date.now() - processandoDesde > PROCESSANDO_TIMEOUT_MS - FETCH_TIMEOUT_MS) {
+        warn('[FilaMyZap] Ciclo perto do timeout: pausando o lote (restante segue no proximo ciclo)', {
+          metadata: { categoria: 'fila', processados: i, restante: lote.length - i }
+        });
+        break;
+      }
 
       let novoStatus = 'erro';
       // Detalhe rico enviado ao backend apenas em caso de erro (retrocompativel).
