@@ -8,7 +8,10 @@ const LOG_DIR = path.join(os.tmpdir(), 'gerenciador-myzap', 'logs');
 const WRITE_PLAIN_LOG = false;
 const LOG_CHANNELS = {
   system: 'log-sistema',
-  myzap: 'log-myzap'
+  myzap: 'log-myzap',
+  // Canal dedicado para as chamadas ao backend DisparaZap (pendentes / fila/status),
+  // separando-as dos logs do MyZap local.
+  backend: 'log-backend'
 };
 
 const LEVEL_LABEL = {
