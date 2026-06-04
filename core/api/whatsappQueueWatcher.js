@@ -285,6 +285,34 @@ function pareceNumeroInvalido(body) {
 }
 
 /**
+ * Extrai o id real da mensagem no WhatsApp da resposta do /sendText do MyZap.
+ * Cobre os 3 formatos das engines: whatsapp-web.js (body.id), WppConnect
+ * (body.data.id[._serialized]) e Venom (body.messageId). Vazio se nao achar.
+ * Esse id e o que casa com o ACK (entregue/lido) la no DisparaZap.
+ */
+function extrairMessageId(body) {
+  if (!body || typeof body !== 'object') {
+    return '';
+  }
+  const cand =
+    body.messageId ||
+    body.id ||
+    (body.data && (body.data.id || body.data.messageId)) ||
+    (body.data && body.data.message && body.data.message.id) ||
+    '';
+  if (!cand) {
+    return '';
+  }
+  if (typeof cand === 'string') {
+    return cand.trim();
+  }
+  if (typeof cand === 'object' && cand._serialized) {
+    return String(cand._serialized).trim();
+  }
+  return String(cand).trim();
+}
+
+/**
  * Envia a mensagem para o MyZap local.
  * Retorna SEMPRE: { ok, erro?, skipped?, body?, codigo_http, resposta_myzap, motivo, etapa }
  * - etapa: 'validacao' (falhas antes do fetch) ou 'envio' (resultado do POST).
@@ -609,6 +637,8 @@ async function processarFilaUmaRodada() {
       let novoStatus = 'erro';
       // Detalhe rico enviado ao backend apenas em caso de erro (retrocompativel).
       let detalheErro = null;
+      // id real da msg no WhatsApp (so no sucesso) -> reportado p/ casar com o ACK.
+      let messageId = '';
       try {
         info('[FilaMyZap] Enviando mensagem', {
           metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa }
@@ -618,8 +648,9 @@ async function processarFilaUmaRodada() {
         novoStatus = envio.ok ? 'enviado' : 'erro';
 
         if (envio.ok) {
+          messageId = extrairMessageId(envio.body);
           info('[FilaMyZap] Mensagem enviada com sucesso', {
-            metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa }
+            metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa, messageId }
           });
         } else {
           // Monta o detalhe do erro para o backend e para o log estruturado.
@@ -665,14 +696,20 @@ async function processarFilaUmaRodada() {
         setUltimoErroStore({ message: detalheErro.erro, etapa: detalheErro.etapa });
       }
 
+      const payloadStatus = {
+        idfila: mensagem?.idfila,
+        idempresa: mensagem?.idempresa || idempresa,
+        status: novoStatus
+      };
+      // So no sucesso e quando o MyZap devolveu o id: backend grava p/ casar o ACK.
+      if (novoStatus === 'enviado' && messageId) {
+        payloadStatus.message_id = messageId;
+      }
+
       const statusOk = await atualizarStatusFila(
         backendApiUrl,
         backendApiToken,
-        {
-          idfila: mensagem?.idfila,
-          idempresa: mensagem?.idempresa || idempresa,
-          status: novoStatus
-        },
+        payloadStatus,
         detalheErro
       );
 
