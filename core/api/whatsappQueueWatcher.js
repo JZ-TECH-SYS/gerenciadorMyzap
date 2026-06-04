@@ -156,6 +156,14 @@ async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
 
     const data = await res.json().catch(() => ({}));
     debug('[FilaMyZap] Retorno verifyRealStatus', { metadata: { status: res.status, data } });
+    // Diferencia credencial/sessao invalida (401/403) de MyZap offline: o sintoma
+    // e o mesmo (res.ok=false), mas a causa e a sessao/token, nao a conexao — sem
+    // isso o operador ve "MyZap indisponivel" quando o real e credencial expirada.
+    if (res.status === 401 || res.status === 403) {
+      warn('[FilaMyZap] Credencial/sessao invalida no MyZap (verifique session/token, nao e queda de conexao)', {
+        metadata: { categoria: 'conexao', codigo_http: res.status }
+      });
+    }
     return res.ok;
   } catch (err) {
     warn('[FilaMyZap] Erro ao validar disponibilidade do MyZap', {
