@@ -1,6 +1,7 @@
 const Store = require('electron-store');
 const store = new Store();
 const { info, warn, error, debug } = require('../myzapLogger');
+const { getMyZapApiBaseUrls } = require('./requestMyZapApi');
 const {
     parseBooleanLike,
     normalizeCapabilityMode,
@@ -8,6 +9,8 @@ const {
     markCapabilityRuntimeUnavailable,
     clearCapabilityRuntimeUnavailable
 } = require('../capabilities');
+
+const REQUEST_TIMEOUT_MS = 8000;
 
 function normalizeUpdateArgs(rawInput) {
     if (typeof rawInput === 'string') {
@@ -55,7 +58,8 @@ function isMissingIaConfigResponse(status, data = {}) {
 async function updateIaConfig(rawInput) {
     const input = normalizeUpdateArgs(rawInput);
     const token = String(input.token || store.get('myzap_apiToken') || '').trim();
-    const api = 'http://localhost:5555/';
+    // 127.0.0.1 primeiro e localhost como fallback (lista vem do helper robusto)
+    const baseUrls = getMyZapApiBaseUrls();
     const sessionKey = String(input.sessionKey || store.get('myzap_sessionKey') || '').trim();
     const sessionName = String(input.sessionName || store.get('myzap_sessionName') || sessionKey).trim();
     const mensagemPadrao = String(
@@ -128,17 +132,47 @@ async function updateIaConfig(rawInput) {
             ia_ativa: iaAtiva ? 1 : 0
         };
 
-        const res = await fetch(`${api}admin/ia-manager/update-config`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                apitoken: token,
-                sessionkey: sessionKey
-            },
-            body: JSON.stringify(payload)
-        });
+        // Tenta cada base URL (127.0.0.1 -> localhost) com AbortController + timeout
+        // para nao travar quando o MyZap local nao responde.
+        let res = null;
+        let data = {};
+        let lastError = null;
 
-        const data = await res.json().catch(() => ({}));
+        for (const api of baseUrls) {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+            try {
+                res = await fetch(`${api}admin/ia-manager/update-config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        apitoken: token,
+                        sessionkey: sessionKey
+                    },
+                    body: JSON.stringify(payload),
+                    signal: ctrl.signal
+                });
+                data = await res.json().catch(() => ({}));
+                lastError = null;
+                break;
+            } catch (fetchErr) {
+                res = null;
+                lastError = fetchErr;
+                warn('Falha na chamada da configuracao de IA no MyZap local', {
+                    metadata: { area: 'updateIaConfig', api, error: fetchErr?.message || String(fetchErr) }
+                });
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        if (!res) {
+            return {
+                status: 'error',
+                message: lastError?.message || 'Falha ao contatar o MyZap local para atualizar a configuracao de IA.'
+            };
+        }
+
         if (isMissingIaConfigResponse(res.status, data)) {
             warn('Configuracao opcional de IA nao encontrada no MyZap local. Fluxo principal sera mantido.', {
                 metadata: {
@@ -170,6 +204,11 @@ async function updateIaConfig(rawInput) {
         }
 
         if (!res.ok || data?.error) {
+            if (res.status === 401 || res.status === 403) {
+                error('Credencial recusada ao atualizar configuracao de IA MyZap (update-config)', {
+                    metadata: { area: 'updateIaConfig', httpStatus: res.status }
+                });
+            }
             return {
                 status: 'error',
                 message: data?.error || `Falha ao atualizar configuracao de IA no MyZap (HTTP ${res.status}).`,

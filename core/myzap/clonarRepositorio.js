@@ -12,6 +12,9 @@ const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
 
+// Watchdog do install: 15 min sem terminar => mata o processo (rede/registro travado).
+const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
+
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
 }
@@ -41,6 +44,19 @@ function rodarComando(executor, args, opcoes = {}) {
     });
     const commandLabel = runner.source || runner.command;
 
+    // Watchdog: se o spawn nao terminar em INSTALL_TIMEOUT_MS, mata o processo.
+    // O kill dispara 'close'/'error', que resolvem a Promise (e limpam o timer).
+    const watchdog = setTimeout(() => {
+      warn('Timeout no comando do MyZap: encerrando processo travado', {
+        metadata: {
+          area: 'clonarRepositorio',
+          comando: commandLabel,
+          timeoutMs: INSTALL_TIMEOUT_MS,
+        },
+      });
+      proc.kill();
+    }, INSTALL_TIMEOUT_MS);
+
     proc.stdout.on('data', (data) => {
       info('MyZap comando stdout', {
         metadata: {
@@ -60,8 +76,14 @@ function rodarComando(executor, args, opcoes = {}) {
       });
     });
 
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
+    proc.on('close', (code) => {
+      clearTimeout(watchdog);
+      resolve(code === 0);
+    });
+    proc.on('error', () => {
+      clearTimeout(watchdog);
+      resolve(false);
+    });
   });
 }
 

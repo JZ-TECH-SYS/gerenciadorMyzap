@@ -130,16 +130,27 @@ async function enviarStatusMyZap() {
     metadata: { area: 'myzapStatusWatcher', url: `${backendApiUrl}parametrizacao-myzap/status`, body }
   });
 
-  const res = await fetch(`${backendApiUrl}parametrizacao-myzap/status`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${backendApiToken}`
-    },
-    body: JSON.stringify(body)
-  });
+  // AbortController + timeout: sob backend lento, sem isso acumulariamos
+  // conexoes abertas a cada 10s (LOOP_INTERVAL_MS).
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  let res;
+  let data;
+  try {
+    res = await fetch(`${backendApiUrl}parametrizacao-myzap/status`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${backendApiToken}`
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal
+    });
 
-  const data = await res.json().catch(() => ({}));
+    data = await res.json().catch(() => ({}));
+  } finally {
+    clearTimeout(timer);
+  }
 
   info('[StatusMyZap] Resposta da API', {
     metadata: { area: 'myzapStatusWatcher', httpStatus: res.status, responseBody: data }

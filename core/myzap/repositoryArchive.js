@@ -7,6 +7,8 @@ const { error: logError, info } = require('./myzapLogger');
 
 const MYZAP_ARCHIVE_URL = 'https://codeload.github.com/JZ-TECH-SYS/myzap/zip/refs/heads/main';
 const MAX_REDIRECTS = 5;
+// Timeout do download para nao travar pra sempre se a rede estagnar.
+const DOWNLOAD_TIMEOUT_MS = 60000;
 
 function baixarArquivo(url, destinationPath, redirectCount = 0) {
   return new Promise((resolve, reject) => {
@@ -54,6 +56,12 @@ function baixarArquivo(url, destinationPath, redirectCount = 0) {
         } catch (_cleanupError) { /* melhor esforco */ }
         reject(err);
       });
+    });
+
+    // Watchdog de inatividade: se a rede estagnar, destroi o request
+    // (dispara o handler 'error' abaixo, que limpa o arquivo e rejeita).
+    request.setTimeout(DOWNLOAD_TIMEOUT_MS, () => {
+      request.destroy(new Error('Timeout ao baixar o pacote do MyZap (rede estagnada).'));
     });
 
     request.on('error', (err) => {
