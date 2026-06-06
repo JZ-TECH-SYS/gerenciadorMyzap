@@ -594,6 +594,67 @@ async function getGitCommand() {
   };
 }
 
+/**
+ * Verifica se da pra ESCREVER no diretorio alvo (ou no ancestral existente mais
+ * proximo). Usado para decidir se a instalacao local precisa MESMO de admin:
+ * AppData\Local e gravavel pelo usuario, entao nao ha por que exigir elevacao.
+ */
+function canWriteToDir(targetDir) {
+  try {
+    let dir = targetDir;
+    while (dir && !fs.existsSync(dir)) {
+      const parent = path.dirname(dir);
+      if (!parent || parent === dir) break;
+      dir = parent;
+    }
+    if (!dir || !fs.existsSync(dir)) return false;
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+// Diretorio (cacheado) com um shim de `node` que executa o PROPRIO Electron como
+// Node (ELECTRON_RUN_AS_NODE=1). Permite o MyZap (cujo `start` e `node index.js`)
+// rodar em maquinas SEM Node instalado no PATH.
+let nodeShimDirCache = null;
+function ensureNodeShimDir() {
+  if (nodeShimDirCache) return nodeShimDirCache;
+  try {
+    const dir = path.join(os.tmpdir(), 'gerenciador-myzap-node-shim');
+    fs.mkdirSync(dir, { recursive: true });
+    const execPath = process.execPath;
+    if (os.platform() === 'win32') {
+      const content = `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${execPath}" %*\r\n`;
+      fs.writeFileSync(path.join(dir, 'node.cmd'), content);
+      fs.writeFileSync(path.join(dir, 'node.bat'), content);
+    } else {
+      const shimPath = path.join(dir, 'node');
+      fs.writeFileSync(shimPath, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${execPath}" "$@"\n`);
+      fs.chmodSync(shimPath, 0o755);
+    }
+    nodeShimDirCache = dir;
+    return dir;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Copia de baseEnv com o shim de `node` na FRENTE do PATH (e ELECTRON_RUN_AS_NODE
+ * garantido pelo proprio shim). Mantem o `node` do sistema como fallback.
+ */
+function envWithNodeShim(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  const shimDir = ensureNodeShimDir();
+  if (shimDir) {
+    const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'PATH';
+    env[pathKey] = shimDir + path.delimiter + (env[pathKey] || '');
+  }
+  return env;
+}
+
 module.exports = {
   isPortInUse,
   isLocalHttpServiceReachable,
@@ -605,4 +666,6 @@ module.exports = {
   getPnpmCommand,
   getGitCommand,
   refreshPathWindows,
+  canWriteToDir,
+  envWithNodeShim,
 };

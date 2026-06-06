@@ -6,6 +6,8 @@ const {
   getPnpmCommand,
   getPrivilegeStatus,
   buildAdminRequiredMessage,
+  canWriteToDir,
+  envWithNodeShim,
 } = require('./processUtils');
 const { iniciarMyZap } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
@@ -38,7 +40,9 @@ function rodarComando(executor, args, opcoes = {}) {
       };
     const proc = spawn(runner.command, [...runner.prefixArgs, ...args], {
       shell: runner.shell,
-      env: runner.env,
+      // shim de `node` no PATH: scripts de lifecycle das deps que chamam `node`
+      // funcionam mesmo sem Node instalado na maquina (usa o Electron como Node).
+      env: envWithNodeShim(runner.env),
       windowsHide: true,
       ...opcoes,
     });
@@ -94,7 +98,11 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       : () => {};
 
     const privilegeStatus = getPrivilegeStatus();
-    if (privilegeStatus.requiresAdminForLocalInstall && !privilegeStatus.isElevated) {
+    // So exige admin se a pasta de instalacao NAO for gravavel pelo usuario. O alvo
+    // padrao (AppData\Local) e gravavel, entao nao ha por que pedir elevacao — era
+    // isso que travava o start automatico em maquinas de operador comuns.
+    const instalavelSemAdmin = canWriteToDir(dirPath);
+    if (privilegeStatus.requiresAdminForLocalInstall && !privilegeStatus.isElevated && !instalavelSemAdmin) {
       const message = buildAdminRequiredMessage(
         reinstall ? 'reinstalar o MyZap local' : 'instalar o MyZap local',
       );
