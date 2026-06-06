@@ -7,19 +7,38 @@ const {
   getCapabilityEntry,
   getBackendApiConfig
 } = require('../myzap/capabilities');
+// Ritmo humano (intervalo entre msgs, janela de horario, teto diario) vindo do backend.
+const { getRitmo, refreshRitmoIfStale } = require('./ritmoConfig');
 
 const store = new Store();
 const MYZAP_API_URL = 'http://localhost:5555/';
 const LOOP_INTERVAL_MS = 3000;
 const FETCH_TIMEOUT_MS = 15000;
-const PROCESSANDO_TIMEOUT_MS = 120000;
+// O ciclo pode durar mais agora que o ritmo HUMANO (segundos entre msgs) e aplicado
+// aqui no worker. A trava de re-entrada acompanha esse teto; quando o ciclo se aproxima
+// dele o lote e pausado e retomado no proximo tick (ver guarda no loop de envio).
+const PROCESSANDO_TIMEOUT_MS = 180000;
 
 // Limite de caracteres da resposta crua do MyZap enviada ao backend / logada.
 const MAX_RESPOSTA_MYZAP_CHARS = 2000;
 
-// Humanizacao: delay aleatorio (ms) entre itens do lote. Configuravel via store.
-const DEFAULT_ITEM_DELAY_MIN_MS = 300;
-const DEFAULT_ITEM_DELAY_MAX_MS = 1500;
+// Humanizacao "digitando": antes de cada sendText o MyZap (WPPConnect) simula
+// digitacao por `time_typing` ms (proporcional ao tamanho do texto, com piso/teto).
+// Engines que nao suportam ignoram o campo (no-op).
+const TYPING_MIN_MS = 1500;
+const TYPING_MAX_MS = 6000;
+const TYPING_CHARS_POR_SEG = 12;
+
+// Teto absoluto do atraso entre mensagens (defesa contra config patologica): evita
+// que um unico sleep gigante estoure a trava de re-entrada do ciclo.
+const DELAY_ENTRE_MSG_TETO_MS = 120000;
+// Piso do atraso entre mensagens: mesmo com intervalo_msg=0 (config errada/corrompida)
+// nunca enviamos em rajada sub-segundo (o que bloqueia o numero).
+const DELAY_ENTRE_MSG_PISO_MS = 1000;
+// Teto de mensagens reivindicadas por ciclo. Dimensionado dinamicamente pelo delay
+// (ver calcularLimiteCiclo) para o lote SEMPRE drenar dentro de um ciclo — assim
+// nenhuma mensagem reivindicada fica presa em 'processando' esperando o timeout.
+const LIMITE_CICLO_MAX = 10;
 
 // Reconexao: backoff simples enquanto o MyZap estiver indisponivel.
 const BACKOFF_BASE_MS = LOOP_INTERVAL_MS;
@@ -27,34 +46,94 @@ const BACKOFF_MAX_MS = 30000;
 
 // Chave no electron-store para persistir o ultimo erro de envio/ciclo.
 const STORE_ULTIMO_ERRO_KEY = 'myzap_queueWatcherUltimoErro';
+// Contador de envios do dia (teto diario): { dia: 'YYYY-MM-DD', total: N }.
+const STORE_ENVIOS_DIA_KEY = 'myzap_enviosDoDia';
 
 // Proxima rodada de processamento so volta a acontecer apos esse timestamp (backoff).
 let backoffAteEm = 0;
-
-function clampNumber(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
-function getItemDelayConfig() {
-  // Teto de seguranca: mesmo com config alta, o atraso por item fica limitado
-  // para o ciclo nao se aproximar do PROCESSANDO_TIMEOUT_MS em lotes grandes.
-  const TETO_MS = 8000;
-  let min = clampNumber(store.get('myzap_itemDelayMinMs'), DEFAULT_ITEM_DELAY_MIN_MS);
-  let max = clampNumber(store.get('myzap_itemDelayMaxMs'), DEFAULT_ITEM_DELAY_MAX_MS);
-  min = Math.min(min, TETO_MS);
-  max = Math.min(max, TETO_MS);
-  if (max < min) max = min;
-  return { min, max };
-}
-
-function randomDelayMs() {
-  const { min, max } = getItemDelayConfig();
-  return Math.floor(min + Math.random() * (max - min));
-}
+// Ultimo motivo de ociosidade ja logado (evita repetir o mesmo log a cada 3s).
+let ultimoMotivoOcioso = '';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Atraso aleatorio (ms) ENTRE mensagens, vindo do ritmo configurado no backend
+// (ritmo.intervalo_msg_min/max_seg). Substitui o antigo fixo de 300-1500ms, que
+// gerava rajadas sub-segundo e bloqueio do numero.
+function randomDelayMs() {
+  const r = getRitmo();
+  let min = Math.max(DELAY_ENTRE_MSG_PISO_MS, r.intervaloMsgMinSeg * 1000);
+  let max = Math.max(min, r.intervaloMsgMaxSeg * 1000);
+  min = Math.min(min, DELAY_ENTRE_MSG_TETO_MS);
+  max = Math.min(max, DELAY_ENTRE_MSG_TETO_MS);
+  return Math.floor(min + Math.random() * (max - min));
+}
+
+// Quantas mensagens reivindicar por ciclo: no PIOR caso (delay maximo + digitando +
+// timeout de fetch por msg) o lote ainda precisa drenar dentro do orcamento do ciclo
+// (PROCESSANDO_TIMEOUT_MS - FETCH_TIMEOUT_MS), com margem. Evita reivindicar 15 e so
+// conseguir enviar 3, deixando 12 presas em 'processando'.
+function calcularLimiteCiclo() {
+  const r = getRitmo();
+  const maxDelayMs = Math.min(DELAY_ENTRE_MSG_TETO_MS, Math.max(0, r.intervaloMsgMaxSeg * 1000));
+  const custoPorMsg = maxDelayMs + TYPING_MAX_MS + FETCH_TIMEOUT_MS;
+  const orcamento = (PROCESSANDO_TIMEOUT_MS - FETCH_TIMEOUT_MS) * 0.8;
+  const n = Math.floor(orcamento / Math.max(1, custoPorMsg));
+  return Math.min(LIMITE_CICLO_MAX, Math.max(1, n));
+}
+
+// Janela de horario permitido (hora LOCAL do PC do operador). Sem janela => 24h.
+// Suporta janela cruzando a meia-noite (ex.: 20:00 -> 06:00).
+function dentroDaJanela(r) {
+  const inicio = r.horarioInicio;
+  const fim = r.horarioFim;
+  if (!inicio || !fim || inicio === fim) return true;
+  const agora = new Date();
+  const hhmm = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
+  if (inicio < fim) return hhmm >= inicio && hhmm <= fim;
+  return hhmm >= inicio || hhmm <= fim; // janela cruza a meia-noite
+}
+
+function hojeISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getEnviosHoje() {
+  const raw = store.get(STORE_ENVIOS_DIA_KEY);
+  if (!raw || typeof raw !== 'object' || !raw.dia) return 0;
+  const total = Math.max(0, Number(raw.total) || 0);
+  const hoje = hojeISO();
+  // Mesmo dia OU relogio do PC andou para TRAS (dia armazenado no "futuro"): mantem a
+  // contagem — assim um ajuste de relogio nao zera o teto e libera uma rajada. So zera
+  // de fato quando o dia avanca (hoje > dia armazenado).
+  if (raw.dia >= hoje) return total;
+  return 0;
+}
+
+function registrarEnvioHoje() {
+  const total = getEnviosHoje() + 1;
+  const raw = store.get(STORE_ENVIOS_DIA_KEY);
+  const diaArmazenado = raw && typeof raw === 'object' && raw.dia ? String(raw.dia) : '';
+  const hoje = hojeISO();
+  // Rotulo do dia nunca anda para tras (protege contra relogio retrocedido).
+  const dia = diaArmazenado > hoje ? diaArmazenado : hoje;
+  store.set(STORE_ENVIOS_DIA_KEY, { dia, total });
+  return total;
+}
+
+// true se ainda ha cota no teto diario (0 = ilimitado).
+function dentroDoTetoDiario(r) {
+  return !r.tetoDiario || getEnviosHoje() < r.tetoDiario;
+}
+
+// Atraso de "digitando" (ms) para um texto: proporcional ao tamanho, com piso/teto.
+function typingMsParaTexto(texto) {
+  const len = String(texto || '').length;
+  if (len === 0) return 0;
+  const estimado = Math.round((len / TYPING_CHARS_POR_SEG) * 1000);
+  return Math.min(TYPING_MAX_MS, Math.max(TYPING_MIN_MS, estimado));
 }
 
 /** Trunca a resposta crua do MyZap (objeto ou string) para ~2000 chars. */
@@ -173,7 +252,7 @@ async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
   }
 }
 
-async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idempresa = '') {
+async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idempresa = '', limite = 0) {
   const params = new URLSearchParams({
     sessionKey: sessionKey || '',
     sessionToken: sessionName || ''
@@ -181,6 +260,12 @@ async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idemp
 
   if (idempresa) {
     params.set('idempresa', idempresa);
+  }
+
+  // Reivindica no maximo `limite` mensagens (dimensionado pelo ritmo) para o lote
+  // sempre caber em um ciclo. Sem limite (0) o backend usa o default.
+  if (limite > 0) {
+    params.set('limite', String(limite));
   }
 
   const query = params.toString();
@@ -376,8 +461,18 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackApiToken) {
     }
   });
 
+  // "Digitando" humano: para envios de texto, pede ao MyZap (WPPConnect) que simule
+  // digitacao por `time_typing` ms ANTES de enviar. O timeout do abort ganha essa folga.
+  let typingMs = 0;
+  if (/^send(text|message)$/i.test(endpointNormalizado) && data && typeof data === 'object') {
+    typingMs = typingMsParaTexto(data.text ?? data.message ?? data.msg ?? data.content);
+    if (typingMs > 0 && data.time_typing === undefined) {
+      data.time_typing = typingMs;
+    }
+  }
+
   const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS + typingMs);
 
   // --- Etapa de envio (POST ao MyZap) ---
   let res;
@@ -488,7 +583,7 @@ async function obterCredenciaisAtivas() {
   };
 }
 
-async function listarPendentesMyZap() {
+async function listarPendentesMyZap(limite = 0) {
   const config = await obterCredenciaisAtivas();
   const {
     backendApiUrl,
@@ -502,7 +597,7 @@ async function listarPendentesMyZap() {
     return [];
   }
 
-  return buscarPendentes(backendApiUrl, backendApiToken, sessionKey, sessionName, idempresa);
+  return buscarPendentes(backendApiUrl, backendApiToken, sessionKey, sessionName, idempresa, limite);
 }
 
 async function processarFilaUmaRodada() {
@@ -594,7 +689,39 @@ async function processarFilaUmaRodada() {
     consecutiveSkips = 0;
     limparBackoff();
 
-    const pendentes = await listarPendentesMyZap();
+    // Ritmo humano (intervalo entre msgs, janela de horario, teto diario) vem do
+    // backend. Revalida no maximo 1x/min (no-op nas demais chamadas deste loop de 3s).
+    await refreshRitmoIfStale();
+    const ritmo = getRitmo();
+
+    // Janela de horario: fora do horario permitido nao enviamos. Esta checagem ocorre
+    // ANTES de reivindicar (claim) qualquer mensagem, entao nada fica preso em
+    // 'processando'. Ocioso (nao conta como skip/backoff de conexao).
+    if (!dentroDaJanela(ritmo)) {
+      if (ultimoMotivoOcioso !== 'fora_janela') {
+        info('[FilaMyZap] Fora da janela de horario permitido — envio pausado', {
+          metadata: { categoria: 'fila', horarioInicio: ritmo.horarioInicio, horarioFim: ritmo.horarioFim }
+        });
+        ultimoMotivoOcioso = 'fora_janela';
+      }
+      return;
+    }
+
+    // Teto diario atingido: pausa ate a virada do dia. Tambem antes do claim.
+    if (!dentroDoTetoDiario(ritmo)) {
+      if (ultimoMotivoOcioso !== 'teto_diario') {
+        info('[FilaMyZap] Teto diario de envios atingido — pausado ate amanha', {
+          metadata: { categoria: 'fila', tetoDiario: ritmo.tetoDiario, enviadosHoje: getEnviosHoje() }
+        });
+        ultimoMotivoOcioso = 'teto_diario';
+      }
+      return;
+    }
+    ultimoMotivoOcioso = '';
+
+    // Reivindica apenas o que da pra enviar neste ciclo (evita itens presos em
+    // 'processando' quando o ritmo e lento e o lote nao cabe no orcamento do ciclo).
+    const pendentes = await listarPendentesMyZap(calcularLimiteCiclo());
     ultimosPendentes = Array.isArray(pendentes) ? pendentes : [];
     const lote = pendentes.filter((m) => String(m?.status || '').toLowerCase() !== 'enviado');
 
@@ -634,6 +761,17 @@ async function processarFilaUmaRodada() {
         break;
       }
 
+      // Janela/teto tambem DENTRO do lote: um ciclo pode cruzar o fim do horario ou
+      // estourar o teto no meio. O restante ja reivindicado volta a 'pendente' pelo
+      // timeout de 'processando' e e reenviado no proximo periodo valido.
+      const ritmoLote = getRitmo();
+      if (!dentroDaJanela(ritmoLote) || !dentroDoTetoDiario(ritmoLote)) {
+        warn('[FilaMyZap] Janela/teto atingido durante o lote: pausando (restante volta a fila)', {
+          metadata: { categoria: 'fila', processados: i, restante: lote.length - i }
+        });
+        break;
+      }
+
       let novoStatus = 'erro';
       // Detalhe rico enviado ao backend apenas em caso de erro (retrocompativel).
       let detalheErro = null;
@@ -649,8 +787,10 @@ async function processarFilaUmaRodada() {
 
         if (envio.ok) {
           messageId = extrairMessageId(envio.body);
+          // Conta no teto diario apenas envios REAIS (skip = ja estava enviado).
+          const enviadosHoje = envio.skipped ? getEnviosHoje() : registrarEnvioHoje();
           info('[FilaMyZap] Mensagem enviada com sucesso', {
-            metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa, messageId }
+            metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa, messageId, enviadosHoje }
           });
         } else {
           // Monta o detalhe do erro para o backend e para o log estruturado.
@@ -834,6 +974,8 @@ function getWhatsappQueueWatcherStatus() {
     ? new Date(new Date(ultimaExecucaoEm).getTime() + LOOP_INTERVAL_MS).toISOString()
     : null;
 
+  const ritmo = getRitmo();
+
   return {
     ativo,
     capabilityEnabled: supportsQueuePolling(),
@@ -846,7 +988,12 @@ function getWhatsappQueueWatcherStatus() {
     // Ultimo erro persistido (sobrevive entre reinicios): { message, etapa, timestamp }.
     ultimoErroDetalhe: store.get(STORE_ULTIMO_ERRO_KEY) || null,
     backoffAteEm: backoffAteEm || null,
-    consecutiveSkips
+    consecutiveSkips,
+    // Ritmo humano vigente + progresso do teto diario (para o painel da fila).
+    ritmo,
+    enviadosHoje: getEnviosHoje(),
+    dentroDaJanela: dentroDaJanela(ritmo),
+    motivoOcioso: ultimoMotivoOcioso || null
   };
 }
 
