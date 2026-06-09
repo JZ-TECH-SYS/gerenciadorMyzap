@@ -6,11 +6,16 @@ const {
   getPnpmCommand,
   getPrivilegeStatus,
   buildAdminRequiredMessage,
+  canWriteToDir,
+  envWithNodeShim,
 } = require('./processUtils');
 const { iniciarMyZap } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
+
+// Watchdog do install: 15 min sem terminar => mata o processo (rede/registro travado).
+const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
@@ -35,11 +40,26 @@ function rodarComando(executor, args, opcoes = {}) {
       };
     const proc = spawn(runner.command, [...runner.prefixArgs, ...args], {
       shell: runner.shell,
-      env: runner.env,
+      // shim de `node` no PATH: scripts de lifecycle das deps que chamam `node`
+      // funcionam mesmo sem Node instalado na maquina (usa o Electron como Node).
+      env: envWithNodeShim(runner.env),
       windowsHide: true,
       ...opcoes,
     });
     const commandLabel = runner.source || runner.command;
+
+    // Watchdog: se o spawn nao terminar em INSTALL_TIMEOUT_MS, mata o processo.
+    // O kill dispara 'close'/'error', que resolvem a Promise (e limpam o timer).
+    const watchdog = setTimeout(() => {
+      warn('Timeout no comando do MyZap: encerrando processo travado', {
+        metadata: {
+          area: 'clonarRepositorio',
+          comando: commandLabel,
+          timeoutMs: INSTALL_TIMEOUT_MS,
+        },
+      });
+      proc.kill();
+    }, INSTALL_TIMEOUT_MS);
 
     proc.stdout.on('data', (data) => {
       info('MyZap comando stdout', {
@@ -60,8 +80,14 @@ function rodarComando(executor, args, opcoes = {}) {
       });
     });
 
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
+    proc.on('close', (code) => {
+      clearTimeout(watchdog);
+      resolve(code === 0);
+    });
+    proc.on('error', () => {
+      clearTimeout(watchdog);
+      resolve(false);
+    });
   });
 }
 
@@ -72,7 +98,11 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       : () => {};
 
     const privilegeStatus = getPrivilegeStatus();
-    if (privilegeStatus.requiresAdminForLocalInstall && !privilegeStatus.isElevated) {
+    // So exige admin se a pasta de instalacao NAO for gravavel pelo usuario. O alvo
+    // padrao (AppData\Local) e gravavel, entao nao ha por que pedir elevacao — era
+    // isso que travava o start automatico em maquinas de operador comuns.
+    const instalavelSemAdmin = canWriteToDir(dirPath);
+    if (privilegeStatus.requiresAdminForLocalInstall && !privilegeStatus.isElevated && !instalavelSemAdmin) {
       const message = buildAdminRequiredMessage(
         reinstall ? 'reinstalar o MyZap local' : 'instalar o MyZap local',
       );

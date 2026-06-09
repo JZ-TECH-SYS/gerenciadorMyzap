@@ -16,7 +16,7 @@ app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu-compositing');
 const path = require('path');
 const Store = require('electron-store');
-const { info, warn, error, abrirPastaLogs } = require('./core/utils/logger');
+const { info, warn, error, abrirPastaLogs, limparLogsAntigos } = require('./core/utils/logger');
 const {
   startWhatsappQueueWatcher,
   stopWhatsappQueueWatcher,
@@ -679,6 +679,13 @@ if (!hasSingleInstanceLock) {
     info('Aplicacao pronta para uso', {
       metadata: { ambiente: app.isPackaged ? 'producao' : 'desenvolvimento' }
     });
+
+    // Limpeza de logs antigos/rotacionados (a funcao existia mas nunca era chamada,
+    // entao os arquivos cresciam indefinidamente). Roda no start e a cada 6h.
+    try { limparLogsAntigos(); } catch (e) { warn('Falha ao limpar logs antigos', { metadata: { error: e?.message || e } }); }
+    setInterval(() => {
+      try { limparLogsAntigos(); } catch (e) { warn('Falha ao limpar logs antigos', { metadata: { error: e?.message || e } }); }
+    }, 6 * 60 * 60 * 1000);
 
     trayManager.init(
       path.join(__dirname, 'assets/icon.png'),

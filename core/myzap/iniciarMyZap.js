@@ -7,6 +7,7 @@ const {
   isLocalHttpServiceReachable,
   getPnpmCommand,
   getGitCommand,
+  envWithNodeShim,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
 
@@ -191,7 +192,9 @@ async function iniciarMyZap(dirPath, options = {}) {
     const child = spawn(pnpmRunner.command, [...pnpmRunner.prefixArgs, 'start'], {
       cwd: dirPath,
       shell: pnpmRunner.shell,
-      env: pnpmRunner.env,
+      // shim de `node` no PATH: o `start` do MyZap e `node index.js`; assim ele sobe
+      // mesmo sem Node instalado na maquina (usa o Electron embutido como Node).
+      env: envWithNodeShim(pnpmRunner.env),
       detached: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
