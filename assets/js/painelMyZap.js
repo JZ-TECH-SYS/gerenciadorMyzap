@@ -21,7 +21,12 @@ const STALE_PROGRESS_HIDE_MS = 15 * 60 * 1000;
 let myzapProgressPollTimer = null;
 let connectionStatusPollTimer = null;
 let qrPollingTimer = null;
+let qrPollingActive = false;
 let qrPollingAttempts = 0;
+let qrPollingErrorStreak = 0;
+let qrPollingNoQrTicks = 0;
+let qrPollingAutoReconnectUsed = false;
+let qrPollingDelayMs = 3000;
 let lastConfigDebugPayload = null;
 let currentCapabilityState = {
   preferences: {},
@@ -928,8 +933,9 @@ async function checkRealConnection() {
       return { isConnected: false, isQrWaiting: false, response };
     }
 
-    const isConnected = realStatus === 'CONNECTED' || isPayloadConnected(response);
-    const isQrWaiting = dbState === 'QRCODE' || dbStatus === 'qrCode';
+    const isConnected = String(realStatus || '').toUpperCase() === 'CONNECTED' || isPayloadConnected(response);
+    const isQrWaiting = String(dbState || '').toUpperCase() === 'QRCODE'
+      || String(dbStatus || '').toLowerCase().includes('qr');
 
     if (isConnected) {
       statusIndicator.className = 'status-indicator connected';
@@ -992,7 +998,7 @@ async function checkConnection() {
   const statusIndicator = document.querySelector('.status-indicator');
 
   // Se o polling de QR esta ativo, nao interferir (ele cuida da UI)
-  if (qrPollingTimer) {
+  if (qrPollingActive) {
     console.log('[MyZap UI] checkConnection: polling de QR ativo, ignorando');
     return;
   }
@@ -1093,11 +1099,44 @@ function extractQrCode(payload) {
 // ---- Fim helpers ----
 
 function stopQrPolling() {
+  qrPollingActive = false;
   if (qrPollingTimer) {
-    clearInterval(qrPollingTimer);
+    clearTimeout(qrPollingTimer);
     qrPollingTimer = null;
   }
   qrPollingAttempts = 0;
+  qrPollingErrorStreak = 0;
+  qrPollingNoQrTicks = 0;
+  qrPollingDelayMs = QR_POLL_INTERVAL_MS;
+}
+
+// ---- Renderizacoes padrao do box de QR/status ----
+function renderConnected(qrBox, statusIndicator) {
+  statusIndicator.className = 'status-indicator connected';
+  statusIndicator.textContent = 'Conectado';
+  qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
+  setButtonsState({ canStart: false, canDelete: true });
+  setIaConfigVisibility(true);
+}
+
+function renderQr(qrBox, statusIndicator, qrCode) {
+  statusIndicator.className = 'status-indicator waiting';
+  statusIndicator.textContent = 'Aguardando leitura do QR Code';
+  qrBox.innerHTML = '<img src="' + qrCode + '" alt="QR Code WhatsApp"/>' +
+    '<div class="qrcode-hint">Escaneie o QR Code com o WhatsApp</div>';
+  setButtonsState({ canStart: false, canDelete: true });
+}
+
+function botaoReconexaoHtml() {
+  return '<div class="mt-2"><button type="button" class="btn btn-sm btn-outline-primary" onclick="forcarReconexao()">Forcar reconexao</button></div>';
+}
+
+function renderReconnectError(qrBox, statusIndicator, message) {
+  statusIndicator.className = 'status-indicator disconnected';
+  statusIndicator.textContent = 'Falha na conexao';
+  qrBox.innerHTML = '<span class="text-danger text-small">' + message + '</span>' + botaoReconexaoHtml();
+  setButtonsState({ canStart: true, canDelete: true });
+  setIaConfigVisibility(false);
 }
 
 async function tickQrPolling() {
@@ -1107,98 +1146,168 @@ async function tickQrPolling() {
   var statusIndicator = document.querySelector('.status-indicator');
   if (!qrBox || !statusIndicator) { stopQrPolling(); return; }
 
+  var snap = null;
   try {
-    // 1. Verificar se ja conectou - checar TODOS os campos possiveis
-    var snap = null;
-    try {
-      snap = await window.api.verifyRealStatus();
-      console.log('[MyZap UI] verifyRealStatus snap:', JSON.stringify(snap));
-    } catch (_snapErr) {
-      console.warn('[MyZap UI] verifyRealStatus falhou:', _snapErr.message);
+    snap = await window.api.getSessionSnapshot();
+  } catch (err) {
+    console.warn('[MyZap UI] getSessionSnapshot falhou:', err && err.message ? err.message : err);
+    snap = null;
+  }
+
+  // ---- Erro de consulta: NUNCA silenciar — apos 3 seguidos, avisar na UI ----
+  if (!snap || snap.status === 'error') {
+    qrPollingErrorStreak++;
+    qrPollingDelayMs = Math.min(
+      Math.round(QR_POLL_INTERVAL_MS * Math.pow(1.5, qrPollingErrorStreak)),
+      10000
+    );
+    if (qrPollingErrorStreak >= 3) {
+      statusIndicator.className = 'status-indicator waiting';
+      statusIndicator.textContent = 'Falha ao consultar o MyZap';
+      qrBox.innerHTML = '<span class="text-danger text-small">Falha ao consultar o MyZap (o servico pode estar reiniciando). Tentando novamente...</span>'
+        + botaoReconexaoHtml();
     }
+    return;
+  }
 
-    var snapConnected = isPayloadConnected(snap);
+  qrPollingErrorStreak = 0;
+  qrPollingDelayMs = QR_POLL_INTERVAL_MS;
 
-    // 2. Buscar getConnectionStatus (tanto para QR quanto para detectar conexao)
-    var connStatus = null;
-    try {
-      connStatus = await window.api.getConnectionStatus();
-      console.log('[MyZap UI] getConnectionStatus:', JSON.stringify(connStatus));
-    } catch (_connErr) {
-      console.warn('[MyZap UI] getConnectionStatus falhou:', _connErr.message);
+  // ---- Conectado -> atualizar UI e parar polling ----
+  if (snap.session_status === 'connected') {
+    stopQrPolling();
+    renderConnected(qrBox, statusIndicator);
+    console.log('[MyZap UI] Sessao conectada! Polling de QR encerrado.');
+    return;
+  }
+
+  // ---- QR disponivel -> exibir/atualizar ----
+  var newQr = snap.qr_base64 || '';
+  if (newQr) {
+    qrPollingNoQrTicks = 0;
+    var existingImg = qrBox.querySelector('img');
+    if (!existingImg || existingImg.getAttribute('src') !== newQr) {
+      renderQr(qrBox, statusIndicator, newQr);
     }
+    return;
+  }
 
-    var connConnected = isPayloadConnected(connStatus);
+  // ---- Sem QR e sem conexao: candidato a sessao zumbi ----
+  qrPollingNoQrTicks++;
+  if (qrPollingNoQrTicks >= 10 && !qrPollingAutoReconnectUsed) {
+    qrPollingAutoReconnectUsed = true;
+    console.log('[MyZap UI] Sessao sem QR ha ~30s, forcando reconexao automatica');
+    statusIndicator.className = 'status-indicator waiting';
+    statusIndicator.textContent = 'Reiniciando sessao automaticamente...';
+    qrBox.innerHTML = '<span class="text-muted-small">A sessao nao gerou QR Code. Reiniciando automaticamente...</span>';
 
-    // ---- CASO 1: Conectado -> atualizar UI e parar polling ----
-    if (snapConnected || connConnected) {
+    try {
+      var result = await window.api.forceReconnect();
+      if (result && result.status === 'success' && result.sessionStatus === 'connected') {
+        stopQrPolling();
+        renderConnected(qrBox, statusIndicator);
+        return;
+      }
+      if (result && result.status === 'success' && result.qrCode) {
+        qrPollingNoQrTicks = 0;
+        renderQr(qrBox, statusIndicator, result.qrCode);
+        return;
+      }
       stopQrPolling();
-      statusIndicator.className = 'status-indicator connected';
-      statusIndicator.textContent = 'Conectado';
-      qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
-      setButtonsState({ canStart: false, canDelete: true });
-      setIaConfigVisibility(true);
-      console.log('[MyZap UI] Sessao conectada! Polling de QR encerrado.');
+      renderReconnectError(qrBox, statusIndicator,
+        (result && result.message) || 'Nao foi possivel reiniciar a sessao automaticamente.');
+    } catch (reconnectErr) {
+      stopQrPolling();
+      renderReconnectError(qrBox, statusIndicator, 'Erro ao reiniciar a sessao automaticamente.');
+    }
+  }
+}
+
+async function finalizarPollingExpirado() {
+  console.log('[MyZap UI] QR polling: limite de tentativas atingido');
+  const qrBox = document.getElementById('qrcode-box');
+  const statusIndicator = document.querySelector('.status-indicator');
+  stopQrPolling();
+
+  // Verificacao final antes de desistir — talvez conectou no ultimo segundo
+  try {
+    const finalSnap = await window.api.getSessionSnapshot();
+    if (finalSnap && finalSnap.session_status === 'connected') {
+      if (qrBox && statusIndicator) renderConnected(qrBox, statusIndicator);
       return;
     }
+  } catch (_e) { /* melhor esforco */ }
 
-    // ---- CASO 2: QR Code disponivel - exibir/atualizar ----
-    var newQr = extractQrCode(connStatus) || extractQrCode(snap);
-    if (newQr) {
-      var existingImg = qrBox.querySelector('img');
-      if (!existingImg || existingImg.src !== newQr) {
-        statusIndicator.className = 'status-indicator waiting';
-        statusIndicator.textContent = 'Aguardando leitura do QR Code';
-        qrBox.innerHTML = '<img src="' + newQr + '" alt="QR Code WhatsApp"/>' +
-          '<div class="qrcode-hint">Escaneie o QR Code com o WhatsApp</div>';
-        setButtonsState({ canStart: false, canDelete: true });
-      }
-    }
-  } catch (err) {
-    console.warn('[MyZap UI] tickQrPolling: erro transiente', err && err.message ? err.message : err);
+  // De fato expirou — informar o usuario com acao
+  if (statusIndicator) {
+    statusIndicator.className = 'status-indicator waiting';
+    statusIndicator.textContent = 'QR Code expirado';
   }
+  if (qrBox) {
+    qrBox.innerHTML = '<span class="text-muted-small">QR Code expirou sem ser escaneado.</span>'
+      + botaoReconexaoHtml();
+  }
+  setButtonsState({ canStart: true, canDelete: true });
+}
+
+async function qrPollingLoop() {
+  if (!qrPollingActive) return;
+
+  if (qrPollingAttempts >= QR_POLL_MAX_ATTEMPTS) {
+    await finalizarPollingExpirado();
+    return;
+  }
+
+  await tickQrPolling();
+
+  if (!qrPollingActive) return;
+  qrPollingTimer = setTimeout(qrPollingLoop, qrPollingDelayMs);
 }
 
 function startQrPolling() {
   stopQrPolling();
   console.log('[MyZap UI] startQrPolling: iniciando polling de QR Code');
+  qrPollingActive = true;
+  qrPollingAutoReconnectUsed = false;
+  qrPollingDelayMs = QR_POLL_INTERVAL_MS;
   // Primeira tentativa apos 2s (MyZap precisa de tempo para gerar o QR)
-  setTimeout(tickQrPolling, 2000);
-  qrPollingTimer = setInterval(async () => {
-    if (qrPollingAttempts >= QR_POLL_MAX_ATTEMPTS) {
-      console.log('[MyZap UI] QR polling: limite de tentativas atingido');
-      const qrBox = document.getElementById('qrcode-box');
-      const statusIndicator = document.querySelector('.status-indicator');
-      stopQrPolling();
+  qrPollingTimer = setTimeout(qrPollingLoop, 2000);
+}
 
-      // Verificacao final antes de desistir — talvez conectou no ultimo segundo
-      try {
-        const finalSnap = await window.api.verifyRealStatus();
-        if (isPayloadConnected(finalSnap)) {
-          if (statusIndicator) {
-            statusIndicator.className = 'status-indicator connected';
-            statusIndicator.textContent = '✅ Conectado';
-          }
-          if (qrBox) qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
-          setButtonsState({ canStart: false, canDelete: true });
-          setIaConfigVisibility(true);
-          return;
-        }
-      } catch (_e) { /* melhor esforco */ }
+async function forcarReconexao() {
+  console.log('[MyZap UI] forcarReconexao: solicitado');
+  const qrBox = document.getElementById('qrcode-box');
+  const statusIndicator = document.querySelector('.status-indicator');
+  if (!qrBox || !statusIndicator) return;
 
-      // De fato expirou — informar o usuario
-      if (statusIndicator) {
-        statusIndicator.className = 'status-indicator waiting';
-        statusIndicator.textContent = 'QR Code expirado';
-      }
-      if (qrBox) {
-        qrBox.innerHTML = '<span class="text-muted-small">QR Code expirou. Clique em Iniciar instancia para gerar um novo.</span>';
-      }
-      setButtonsState({ canStart: true, canDelete: true });
+  stopQrPolling();
+  statusIndicator.className = 'status-indicator waiting';
+  statusIndicator.textContent = 'Forcando reconexao...';
+  qrBox.innerHTML = '<span class="text-muted-small">Encerrando a sessao atual e gerando um novo QR Code...</span>';
+  setButtonsState({ canStart: false, canDelete: false });
+
+  try {
+    const result = await window.api.forceReconnect();
+    if (result && result.status === 'success' && result.sessionStatus === 'connected') {
+      renderConnected(qrBox, statusIndicator);
       return;
     }
-    await tickQrPolling();
-  }, QR_POLL_INTERVAL_MS);
+    if (result && result.status === 'success' && result.qrCode) {
+      renderQr(qrBox, statusIndicator, result.qrCode);
+      startQrPolling();
+      return;
+    }
+    if (result && result.status === 'success') {
+      statusIndicator.textContent = 'Sessao reiniciada, aguardando QR Code...';
+      startQrPolling();
+      return;
+    }
+    renderReconnectError(qrBox, statusIndicator,
+      (result && result.message) || 'Nao foi possivel reconectar.');
+  } catch (err) {
+    renderReconnectError(qrBox, statusIndicator,
+      'Erro ao forcar reconexao: ' + (err && err.message ? err.message : err));
+  }
 }
 
 
@@ -1214,11 +1323,18 @@ async function iniciarSessao() {
 
   try {
     const realCheck = await checkRealConnection();
-    if (realCheck?.isConnected || realCheck?.isQrWaiting) {
-      statusIndicator.className = 'status-indicator waiting';
-      statusIndicator.textContent = '⚠️ Sessão já existe';
-
+    if (realCheck?.isConnected) {
+      statusIndicator.className = 'status-indicator connected';
+      statusIndicator.textContent = 'Conectado';
       setButtonsState({ canStart: false, canDelete: true });
+      return;
+    }
+    if (realCheck?.isQrWaiting) {
+      // Sessao ja existe aguardando QR: liga o polling para mostrar o QR atual
+      statusIndicator.className = 'status-indicator waiting';
+      statusIndicator.textContent = 'Sessao ja existe, buscando QR Code...';
+      setButtonsState({ canStart: false, canDelete: true });
+      startQrPolling();
       return;
     }
 
@@ -1227,47 +1343,39 @@ async function iniciarSessao() {
 
     qrBox.innerHTML = `
       <span class="text-muted-small">
-        Criando sessao no MyZap, aguarde...
+        Criando sessao no MyZap (com recuperacao automatica), aguarde...
       </span>
     `;
-
-    const response = await window.api.startSession();
-    console.log('[MyZap UI] startSession resposta:', JSON.stringify(response));
-
-    if (!response || response.result !== 'success') {
-      throw new Error('Sem resposta do MyZap. Verifique se o servico esta rodando (porta 5555).');
-    }
-
     setButtonsState({ canStart: false, canDelete: true });
 
-    // Se o start ja retornou QR code (waitQrCode: true), exibir imediatamente
-    const qrFromStart = response.qrCode || response.qr_code || response.qrcode || response.base64Qrimg || response.urlCode || '';
-    if (qrFromStart) {
-      console.log('[MyZap UI] QR code recebido direto do startSession');
-      statusIndicator.className = 'status-indicator waiting';
-      statusIndicator.textContent = '⏳ Aguardando leitura do QR Code';
-      qrBox.innerHTML = `
-        <img src="${qrFromStart}" alt="QR Code WhatsApp"/>
-        <div class="qrcode-hint">Escaneie o QR Code com o WhatsApp</div>
-      `;
-    } else {
-      statusIndicator.textContent = 'Sessao iniciada, aguardando QR Code...';
+    // connectSession = startSession + deteccao de sessao zumbi + 1 retry
+    // automatico (deleteSession + start) + resposta normalizada.
+    const response = await window.api.connectSession();
+    console.log('[MyZap UI] connectSession resposta:', JSON.stringify(response));
+
+    if (response && response.status === 'success' && response.sessionStatus === 'connected') {
+      renderConnected(qrBox, statusIndicator);
+      return;
     }
 
-    // Iniciar polling para atualizar QR e detectar conexao (3s, ate ~120s)
-    startQrPolling();
+    if (response && response.status === 'success' && response.qrCode) {
+      renderQr(qrBox, statusIndicator, response.qrCode);
+      startQrPolling();
+      return;
+    }
 
+    if (response && response.status === 'success') {
+      statusIndicator.textContent = 'Sessao iniciada, aguardando QR Code...';
+      startQrPolling();
+      return;
+    }
+
+    renderReconnectError(qrBox, statusIndicator,
+      (response && response.message) || 'Nao foi possivel iniciar a sessao. Verifique se o servico esta rodando (porta 5555).');
   } catch (err) {
     console.error('Erro ao iniciar sessao:', err);
-
-    statusIndicator.className = 'status-indicator disconnected';
-    statusIndicator.textContent = 'âŒ Erro ao iniciar sessÃ£o';
-
-    qrBox.innerHTML = `
-      <span class="text-danger text-small">
-        Nao foi possivel iniciar a sessao
-      </span>
-    `;
+    renderReconnectError(qrBox, statusIndicator,
+      'Nao foi possivel iniciar a sessao: ' + (err && err.message ? err.message : err));
   }
 }
 
@@ -2076,6 +2184,31 @@ function setDiagFeedback(type, message) {
   el.className = `alert ${map[type] || 'alert-secondary'} mb-3`;
   el.textContent = message;
   el.classList.remove('d-none');
+}
+
+async function repararServicoAgora() {
+  const btn = document.getElementById('btn-repair-service');
+  try {
+    if (btn) btn.disabled = true;
+    setDiagFeedback('info', 'Reparando o MyZap... isso pode levar alguns minutos (reinicia o servico e, se preciso, reinstala preservando a sessao).');
+
+    const r = await window.api.repairService();
+    if (r && r.status === 'success') {
+      setDiagFeedback('success', r.message || 'MyZap reparado e no ar.');
+      // atualiza o box de QR/status com a situacao real pos-reparo
+      try { await checkRealConnection(); } catch (_e) { /* melhor esforco */ }
+    } else if (r && r.status === 'busy') {
+      setDiagFeedback('warning', r.message || 'Outra operacao em andamento. Tente novamente em instantes.');
+    } else if (r && r.status === 'skipped') {
+      setDiagFeedback('info', r.message || 'Nada para reparar neste modo.');
+    } else {
+      setDiagFeedback('error', (r && r.message) || 'O reparo nao conseguiu subir o MyZap. Tente o Reset geral.');
+    }
+  } catch (e) {
+    setDiagFeedback('error', 'Erro ao reparar: ' + (e?.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function buscarAtualizacao() {

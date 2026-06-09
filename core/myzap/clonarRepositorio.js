@@ -2,14 +2,15 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const { error: logError, warn, info } = require('./myzapLogger');
 const {
-  killProcessesOnPort,
   getPnpmCommand,
   getPrivilegeStatus,
   buildAdminRequiredMessage,
   canWriteToDir,
   envWithNodeShim,
 } = require('./processUtils');
-const { iniciarMyZap } = require('./iniciarMyZap');
+const { iniciarMyZap, stopMyZapAndFreePort } = require('./iniciarMyZap');
+const opLock = require('./opLock');
+const { fetchRemoteMainSha, setInstalledSha } = require('./updateChecker');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
@@ -62,6 +63,9 @@ function rodarComando(executor, args, opcoes = {}) {
     }, INSTALL_TIMEOUT_MS);
 
     proc.stdout.on('data', (data) => {
+      // Output do comando = progresso real: alimenta o heartbeat do lock para
+      // um install longo nao ser tratado como operacao travada.
+      opLock.touch();
       info('MyZap comando stdout', {
         metadata: {
           area: 'clonarRepositorio',
@@ -71,6 +75,7 @@ function rodarComando(executor, args, opcoes = {}) {
       });
     });
     proc.stderr.on('data', (data) => {
+      opLock.touch();
       warn('MyZap comando stderr', {
         metadata: {
           area: 'clonarRepositorio',
@@ -167,16 +172,14 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       });
       info('Iniciando modo de reinstalacao do MyZap', { metadata: { dirPath } });
 
-      const killResult = killProcessesOnPort(5555);
-      if (killResult.failed.length > 0) {
-        warn('Nao foi possivel finalizar alguns processos na porta 5555', {
-          metadata: { failed: killResult.failed },
+      // Mata a arvore + espera a porta liberar de verdade; o sleep cego de
+      // 500ms era insuficiente para o Windows soltar os file locks do sqlite.
+      const { portFree } = await stopMyZapAndFreePort({ timeoutMs: 15000 });
+      if (!portFree) {
+        warn('Reinstalacao: porta 5555 continua em uso apos kill', {
+          metadata: { area: 'clonarRepositorio', dirPath },
         });
       }
-
-      await new Promise((resolve) => {
-        setTimeout(resolve, 500);
-      });
 
       if (fs.existsSync(dirPath)) {
         try {
@@ -193,9 +196,15 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
 
     transition('cloning_repo', { message: 'Baixando pacote do MyZap...', dirPath });
 
+    // Pina o download no commit SHA atual da main: alem de eliminar corrida
+    // com push durante o download, registra a versao instalada para o fluxo
+    // de atualizacao sem Git (updateChecker). Sem rede p/ API, baixa a main.
+    const shaParaInstalar = String(options.sha || '').trim() || await fetchRemoteMainSha() || '';
+
     try {
       await downloadRepositoryArchive(dirPath, {
         onProgress: reportProgress,
+        sha: shaParaInstalar,
       });
     } catch (archiveErr) {
       logError('Falha ao baixar o pacote do MyZap para instalacao local', {
@@ -254,6 +263,10 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       return startResult;
     }
 
+    if (shaParaInstalar) {
+      setInstalledSha(shaParaInstalar);
+    }
+
     reportProgress('MyZap local iniciado. Finalizando ajustes...', 'start_confirmed', {
       percent: 95,
       dirPath,
@@ -270,3 +283,6 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
 }
 
 module.exports = clonarRepositorio;
+// Reusado pelo updateMyZap para rodar `pnpm install` no staging com o mesmo
+// watchdog/heartbeat deste fluxo.
+module.exports.rodarComando = rodarComando;

@@ -2,8 +2,14 @@ const { app } = require('electron');
 const log = require('electron-log');
 const { info, warn, error } = require('./utils/logger');
 
+// Espera educada antes do quitAndInstall: nao derrubar o app no MEIO de um
+// lote de disparo (mensagens ficavam presas em 'processando' no backend).
+const INSTALL_RETRY_MS = 15 * 1000;
+const INSTALL_DEADLINE_MS = 10 * 60 * 1000;
+
 function attachAutoUpdaterHandlers(autoUpdater, callbacks = {}) {
-  const { toast } = callbacks;
+  const { toast, getQueueStatus } = callbacks;
+  let installScheduled = false;
 
   autoUpdater.logger = log;
   autoUpdater.logger.transports.file.level = 'info';
@@ -28,13 +34,52 @@ function attachAutoUpdaterHandlers(autoUpdater, callbacks = {}) {
     info('Atualização baixada e aguardando instalação', {
       metadata: { action: 'update-downloaded' }
     });
-    toast?.('Atualização baixada. Aplicando agora...');
-    try {
-      autoUpdater.quitAndInstall();
-    } catch (err) {
-      warn('Falha ao aplicar atualização automaticamente', { metadata: { error: err } });
-      toast?.('Não foi possível aplicar a atualização automaticamente.');
+
+    if (installScheduled) {
+      return;
     }
+    installScheduled = true;
+
+    const deadline = Date.now() + INSTALL_DEADLINE_MS;
+    let avisouEspera = false;
+
+    const instalarAgora = () => {
+      try {
+        autoUpdater.quitAndInstall();
+      } catch (err) {
+        warn('Falha ao aplicar atualização automaticamente', { metadata: { error: err } });
+        toast?.('Não foi possível aplicar a atualização automaticamente.');
+        installScheduled = false;
+      }
+    };
+
+    const tentarInstalar = () => {
+      let filaOcupada = false;
+      try {
+        const status = (typeof getQueueStatus === 'function') ? getQueueStatus() : null;
+        filaOcupada = Boolean(status?.processando);
+      } catch (_e) {
+        filaOcupada = false;
+      }
+
+      if (!filaOcupada || Date.now() >= deadline) {
+        toast?.('Atualização baixada. Aplicando agora...');
+        instalarAgora();
+        return;
+      }
+
+      if (!avisouEspera) {
+        avisouEspera = true;
+        toast?.('Atualização baixada. Aguardando o fim do lote de envio para aplicar...');
+        info('AutoUpdater aguardando fila ociosa para instalar', {
+          metadata: { action: 'update-downloaded', deadlineEmMs: INSTALL_DEADLINE_MS }
+        });
+      }
+
+      setTimeout(tentarInstalar, INSTALL_RETRY_MS);
+    };
+
+    tentarInstalar();
   });
 }
 

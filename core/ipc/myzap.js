@@ -9,6 +9,8 @@ const getConnectionStatus = require('../myzap/api/getConnectionStatus');
 const startSession = require('../myzap/api/startSession');
 const deleteSession = require('../myzap/api/deleteSession');
 const verifyRealStatus = require('../myzap/api/verifyRealStatus');
+const { getSessionSnapshot } = require('../myzap/api/getSessionSnapshot');
+const { connectWithRecovery } = require('../myzap/api/connectSession');
 const updateIaConfig = require('../myzap/api/updateIaConfig');
 const { getMyZapApiBaseUrls } = require('../myzap/api/requestMyZapApi');
 const { iniciarMyZap } = require('../myzap/iniciarMyZap');
@@ -18,6 +20,10 @@ const {
     ensureMyZapReadyAndStart
 } = require('../myzap/autoConfig');
 const { resetMyZapEnvironment } = require('../myzap/resetEnvironment');
+const {
+    getOrCreateLocalToken,
+    buildEnvContent: buildTemplateEnvContent
+} = require('../myzap/envTemplate');
 const { getStateSnapshot } = require('../myzap/stateMachine');
 const { getPrivilegeStatus } = require('../myzap/processUtils');
 const {
@@ -219,6 +225,57 @@ function registerMyZapHandlers(ipcMain) {
             });
             return {
                 status: 'error',
+                message: error.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('myzap:getSessionSnapshot', async () => {
+        try {
+            return await getSessionSnapshot();
+        } catch (error) {
+            warn('Falha ao consolidar snapshot de sessao via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                session_status: 'unknown',
+                qr_base64: null,
+                message: error.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('myzap:connectSession', async () => {
+        try {
+            return await connectWithRecovery();
+        } catch (error) {
+            warn('Falha ao conectar sessao com recuperacao via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                sessionStatus: 'unknown',
+                qrCode: null,
+                message: error.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('myzap:forceReconnect', async () => {
+        try {
+            info('IPC myzap:forceReconnect recebido', {
+                metadata: { area: 'ipcMyzap' }
+            });
+            return await connectWithRecovery({ forceCloseFirst: true });
+        } catch (error) {
+            warn('Falha ao forcar reconexao via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                sessionStatus: 'unknown',
+                qrCode: null,
                 message: error.message || String(error)
             };
         }
@@ -468,52 +525,48 @@ function registerMyZapHandlers(ipcMain) {
         try {
             const { TOKEN = '', OPENAI_API_KEY = '', EMAIL_TOKEN = '' } = secrets || {};
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
-            const templatePath = path.join(__dirname, '..', 'myzap', 'configs', '.env');
-            const targets = [];
-            if (myzapDir && fs.existsSync(path.join(myzapDir, '.env'))) {
-                targets.push(path.join(myzapDir, '.env'));
-            }
-            if (fs.existsSync(templatePath)) {
-                targets.push(templatePath);
-            }
+            const localEnvPath = (myzapDir && fs.existsSync(path.join(myzapDir, '.env')))
+                ? path.join(myzapDir, '.env')
+                : '';
 
-            // Sempre atualiza myzap_envContent no store para que futuras instalacoes carreguem os segredos
+            // Base: store -> .env instalado -> template gerado em codigo.
+            // (O antigo template em disco morreu junto com os segredos comitados;
+            // em producao ele ficava dentro do app.asar e a escrita falhava.)
             const storedEnv = String(envStore.get('myzap_envContent') || '').trim();
-            const templateEnv = fs.existsSync(templatePath) ? fs.readFileSync(templatePath, 'utf8') : '';
-            let baseEnv = storedEnv || templateEnv;
-            if (baseEnv) {
-                baseEnv = baseEnv.replace(/^TOKEN=.*$/m, `TOKEN="${TOKEN}"`);
-                baseEnv = baseEnv.replace(/^OPENAI_API_KEY=.*$/m, `OPENAI_API_KEY="${OPENAI_API_KEY}"`);
-                baseEnv = baseEnv.replace(/^EMAIL_TOKEN=.*$/m, `EMAIL_TOKEN="${EMAIL_TOKEN}"`);
-                envStore.set('myzap_envContent', baseEnv);
-            }
+            const installedEnv = localEnvPath ? fs.readFileSync(localEnvPath, 'utf8') : '';
+            let baseEnv = storedEnv || installedEnv || buildTemplateEnvContent({
+                token: TOKEN || getOrCreateLocalToken(envStore, myzapDir),
+                openaiKey: OPENAI_API_KEY,
+                emailToken: EMAIL_TOKEN
+            });
 
-            // Sincronizar myzap_apiToken com o TOKEN do .env para que as chamadas HTTP a API local usem o mesmo valor
+            baseEnv = baseEnv.replace(/^TOKEN=.*$/m, `TOKEN="${TOKEN}"`);
+            baseEnv = baseEnv.replace(/^OPENAI_API_KEY=.*$/m, `OPENAI_API_KEY="${OPENAI_API_KEY}"`);
+            baseEnv = baseEnv.replace(/^EMAIL_TOKEN=.*$/m, `EMAIL_TOKEN="${EMAIL_TOKEN}"`);
+            envStore.set('myzap_envContent', baseEnv);
+
+            // Sincronizar myzap_apiToken/localToken com o TOKEN para que as
+            // chamadas HTTP a API local usem o mesmo valor
             if (TOKEN) {
                 envStore.set('myzap_apiToken', TOKEN);
+                envStore.set('myzap_localToken', TOKEN);
                 info('myzap_apiToken sincronizado com TOKEN do .env', {
                     metadata: { area: 'ipcMyzap' }
                 });
             }
 
-            if (targets.length === 0) {
-                // Nenhum .env instalado ainda — apenas o store foi atualizado
+            if (!localEnvPath) {
                 info('Segredos salvos no store (MyZap ainda nao instalado)', {
                     metadata: { area: 'ipcMyzap' }
                 });
                 return { status: 'success', message: 'Segredos salvos. Instale o MyZap para aplicar.' };
             }
-            for (const filePath of targets) {
-                let content = fs.readFileSync(filePath, 'utf8');
-                content = content.replace(/^TOKEN=.*$/m, `TOKEN="${TOKEN}"`);
-                content = content.replace(/^OPENAI_API_KEY=.*$/m, `OPENAI_API_KEY="${OPENAI_API_KEY}"`);
-                content = content.replace(/^EMAIL_TOKEN=.*$/m, `EMAIL_TOKEN="${EMAIL_TOKEN}"`);
-                fs.writeFileSync(filePath, content, 'utf8');
-            }
+
+            fs.writeFileSync(localEnvPath, baseEnv, 'utf8');
             info('Segredos .env salvos com sucesso', {
-                metadata: { area: 'ipcMyzap', targets: targets.length }
+                metadata: { area: 'ipcMyzap' }
             });
-            return { status: 'success', message: `Segredos salvos com sucesso.` };
+            return { status: 'success', message: 'Segredos salvos com sucesso.' };
         } catch (error) {
             warn('Falha ao salvar segredos .env via IPC', { metadata: { error } });
             return { status: 'error', message: error.message || String(error) };
@@ -524,12 +577,9 @@ function registerMyZapHandlers(ipcMain) {
         try {
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
             const localEnv = myzapDir ? path.join(myzapDir, '.env') : '';
-            const templateEnv = path.join(__dirname, '..', 'myzap', 'configs', '.env');
             let envContent = '';
             if (localEnv && fs.existsSync(localEnv)) {
                 envContent = fs.readFileSync(localEnv, 'utf8');
-            } else if (fs.existsSync(templateEnv)) {
-                envContent = fs.readFileSync(templateEnv, 'utf8');
             }
             // Fallback ao store: apos reset os arquivos sao apagados,
             // mas myzap_envContent ainda guarda os segredos configurados

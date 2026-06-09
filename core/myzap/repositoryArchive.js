@@ -3,12 +3,24 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const extractZip = require('extract-zip');
-const { error: logError, info } = require('./myzapLogger');
+const { error: logError, info, warn } = require('./myzapLogger');
 
-const MYZAP_ARCHIVE_URL = 'https://codeload.github.com/JZ-TECH-SYS/myzap/zip/refs/heads/main';
+const MYZAP_ARCHIVE_BASE = 'https://codeload.github.com/JZ-TECH-SYS/myzap/zip/';
+const MYZAP_ARCHIVE_URL = `${MYZAP_ARCHIVE_BASE}refs/heads/main`;
 const MAX_REDIRECTS = 5;
 // Timeout do download para nao travar pra sempre se a rede estagnar.
 const DOWNLOAD_TIMEOUT_MS = 60000;
+// Retry do download: rede instavel nao pode ser falha permanente.
+const DOWNLOAD_RETRY_DELAYS_MS = [2000, 8000, 30000];
+
+/**
+ * Monta a URL do archive. Com um commit SHA, baixa EXATAMENTE aquela versao
+ * (elimina corrida com push novo durante o download); sem SHA, baixa a main.
+ */
+function buildArchiveUrl(sha) {
+  const ref = String(sha || '').trim();
+  return ref ? `${MYZAP_ARCHIVE_BASE}${ref}` : MYZAP_ARCHIVE_URL;
+}
 
 function baixarArquivo(url, destinationPath, redirectCount = 0) {
   return new Promise((resolve, reject) => {
@@ -73,6 +85,34 @@ function baixarArquivo(url, destinationPath, redirectCount = 0) {
   });
 }
 
+async function baixarArquivoComRetry(url, destinationPath) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= DOWNLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await baixarArquivo(url, destinationPath);
+      return;
+    } catch (err) {
+      lastError = err;
+      const isLastAttempt = attempt === DOWNLOAD_RETRY_DELAYS_MS.length;
+      if (isLastAttempt) break;
+
+      const delayMs = DOWNLOAD_RETRY_DELAYS_MS[attempt];
+      warn('Download do MyZap falhou, tentando novamente', {
+        metadata: {
+          area: 'repositoryArchive',
+          tentativa: attempt + 1,
+          proximaEmMs: delayMs,
+          error: err?.message || String(err),
+        },
+      });
+      await new Promise((resolve) => { setTimeout(resolve, delayMs); });
+    }
+  }
+
+  throw lastError;
+}
+
 function validarDestinoInstalacao(dirPath) {
   if (!fs.existsSync(dirPath)) {
     return;
@@ -112,6 +152,7 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
   const reportProgress = (typeof options.onProgress === 'function')
     ? options.onProgress
     : () => {};
+  const archiveUrl = buildArchiveUrl(options.sha);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myzap-archive-'));
   const archivePath = path.join(tempDir, 'myzap-main.zip');
 
@@ -122,15 +163,15 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
     reportProgress('Baixando pacote compactado do MyZap...', 'download_archive', {
       percent: 35,
       dirPath,
-      archiveUrl: MYZAP_ARCHIVE_URL,
+      archiveUrl,
     });
 
-    await baixarArquivo(MYZAP_ARCHIVE_URL, archivePath);
+    await baixarArquivoComRetry(archiveUrl, archivePath);
 
     reportProgress('Extraindo arquivos do MyZap...', 'extract_archive', {
       percent: 45,
       dirPath,
-      archiveUrl: MYZAP_ARCHIVE_URL,
+      archiveUrl,
     });
 
     await extractZip(archivePath, { dir: tempDir });
@@ -142,20 +183,21 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
       metadata: {
         area: 'repositoryArchive',
         dirPath,
-        archiveUrl: MYZAP_ARCHIVE_URL,
+        archiveUrl,
       },
     });
 
     return {
-      archiveUrl: MYZAP_ARCHIVE_URL,
+      archiveUrl,
       extractedRoot,
+      sha: String(options.sha || '').trim() || null,
     };
   } catch (err) {
     logError('Falha ao baixar ou extrair o pacote do MyZap', {
       metadata: {
         area: 'repositoryArchive',
         dirPath,
-        archiveUrl: MYZAP_ARCHIVE_URL,
+        archiveUrl,
         error: err,
       },
     });
@@ -169,5 +211,7 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
 
 module.exports = {
   MYZAP_ARCHIVE_URL,
+  buildArchiveUrl,
+  baixarArquivoComRetry,
   downloadRepositoryArchive,
 };

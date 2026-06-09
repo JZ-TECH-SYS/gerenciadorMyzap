@@ -1,21 +1,15 @@
 const fs = require('fs');
 const path = require('path');
+const Store = require('electron-store');
 const { info, warn, error } = require('./myzapLogger');
+const { getOrCreateLocalToken, buildEnvContent } = require('./envTemplate');
 
-function getBundledEnvPath() {
-    return path.join(__dirname, 'configs', '.env');
-}
+const store = new Store();
 
 function getBundledDbPath() {
-    return path.join(__dirname, 'configs', 'db.sqlite');
-}
-
-function readBundledEnv() {
-    const envPath = getBundledEnvPath();
-    if (!fs.existsSync(envPath)) {
-        return '';
-    }
-    return fs.readFileSync(envPath, 'utf8');
+    // Banco SEMENTE vazio (apenas schema das migrations do MyZap). O MyZap nao
+    // roda migrations no boot, entao precisa nascer com as tabelas criadas.
+    return path.join(__dirname, 'configs', 'db.seed.sqlite');
 }
 
 function syncMyZapConfigs(dirPath, options = {}) {
@@ -31,13 +25,16 @@ function syncMyZapConfigs(dirPath, options = {}) {
         const envContent = String(options.envContent || '').trim();
 
         const envDest = path.join(dirPath, '.env');
-        const bundledEnv = String(readBundledEnv() || '').trim();
-        const envToWrite = envContent || bundledEnv;
+        // Sem conteudo explicito, gera o template em codigo com o TOKEN unico
+        // desta maquina (o antigo .env comitado com TOKEN compartilhado morreu).
+        const envToWrite = envContent || buildEnvContent({
+            token: getOrCreateLocalToken(store, dirPath)
+        });
 
         if (!envToWrite) {
             return {
                 status: 'error',
-                message: 'Arquivo .env padrao nao encontrado em core/myzap/configs/.env.'
+                message: 'Nao foi possivel montar o conteudo do .env do MyZap.'
             };
         }
 
@@ -62,7 +59,7 @@ function syncMyZapConfigs(dirPath, options = {}) {
                 dbSkipped = true;
             }
         } else {
-            warn('Banco de dados base nao encontrado em core/myzap/configs/db.sqlite', {
+            warn('Banco de dados base nao encontrado em core/myzap/configs/db.seed.sqlite', {
                 metadata: { dbOrigem }
             });
         }

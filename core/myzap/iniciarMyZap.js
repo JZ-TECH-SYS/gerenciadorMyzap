@@ -1,12 +1,12 @@
 const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
 const { error: logError, info, warn } = require('./myzapLogger');
 const {
   isPortInUse,
   isLocalHttpServiceReachable,
   getPnpmCommand,
-  getGitCommand,
+  killProcessTree,
+  killProcessesOnPort,
+  waitForPortFree,
   envWithNodeShim,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
@@ -19,7 +19,9 @@ function getErrorMessage(error) {
 let myzapChildProcess = null;
 
 /**
- * Mata o child process rastreado do MyZap, se existir.
+ * Mata a ARVORE do child process rastreado do MyZap, se existir.
+ * Matar so o pai (pnpm) deixava o `node index.js` filho vivo segurando a
+ * porta 5555 no Windows — causa raiz do "MyZap travado ao reiniciar".
  */
 function killMyZapProcess() {
   if (!myzapChildProcess) {
@@ -31,9 +33,9 @@ function killMyZapProcess() {
 
   try {
     const { pid } = myzapChildProcess;
-    myzapChildProcess.kill('SIGTERM');
-    info('killMyZapProcess: SIGTERM enviado ao child process do MyZap', {
-      metadata: { area: 'iniciarMyZap', pid },
+    const killed = killProcessTree(pid);
+    info('killMyZapProcess: arvore de processos do MyZap finalizada', {
+      metadata: { area: 'iniciarMyZap', pid, killed },
     });
   } catch (err) {
     warn('killMyZapProcess: falha ao matar child process', {
@@ -44,45 +46,34 @@ function killMyZapProcess() {
   }
 }
 
-function executarComando(executor, args, cwd) {
-  return new Promise((resolve, reject) => {
-    const runner = (typeof executor === 'string')
-      ? {
-        command: executor,
-        prefixArgs: [],
-        shell: false,
-        env: process.env,
-      }
-      : {
-        prefixArgs: [],
-        shell: false,
-        env: process.env,
-        ...executor,
-      };
-    const child = spawn(runner.command, [...runner.prefixArgs, ...args], {
-      cwd,
-      shell: runner.shell,
-      env: runner.env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const commandLabel = runner.source || runner.command;
+/**
+ * Parada completa do servico: mata a arvore rastreada, varre a porta 5555
+ * (pega processos que escaparam do rastreio, ex.: instancia antiga) e espera
+ * a porta ficar REALMENTE livre antes de devolver o controle.
+ *
+ * @returns {Promise<{ portFree: boolean }>}
+ */
+async function stopMyZapAndFreePort(options = {}) {
+  const porta = Number.isFinite(options.port) ? options.port : 5555;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000;
 
-    let stderr = '';
+  killMyZapProcess();
 
-    child.stderr.on('data', (data) => {
-      stderr += data.toString();
+  const portKill = killProcessesOnPort(porta);
+  if (portKill.killed.length > 0 || portKill.failed.length > 0) {
+    info('stopMyZapAndFreePort: varredura da porta concluida', {
+      metadata: { area: 'iniciarMyZap', porta, ...portKill },
     });
+  }
 
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(stderr.trim() || `Comando "${commandLabel}" finalizou com codigo ${code}.`));
+  const portFree = await waitForPortFree(porta, { timeoutMs });
+  if (!portFree) {
+    warn('stopMyZapAndFreePort: porta continua em uso apos kill', {
+      metadata: { area: 'iniciarMyZap', porta, timeoutMs },
     });
-  });
+  }
+
+  return { portFree };
 }
 
 function wait(ms) {
@@ -153,30 +144,6 @@ async function iniciarMyZap(dirPath, options = {}) {
       };
     }
 
-    const gitDir = path.join(dirPath, '.git');
-    const gitRunner = await getGitCommand();
-    if (fs.existsSync(gitDir) && gitRunner) {
-      reportProgress('Atualizando codigo local do MyZap...', 'git_pull', {
-        percent: 90,
-        dirPath,
-      });
-      try {
-        await executarComando(gitRunner, ['pull', 'origin', 'main'], dirPath);
-      } catch (gitErr) {
-        info('git pull falhou (nao-critico, continuando)', {
-          metadata: { area: 'iniciarMyZap', error: getErrorMessage(gitErr) },
-        });
-      }
-    } else if (fs.existsSync(gitDir)) {
-      info('Diretorio .git encontrado, mas Git nao esta disponivel. Pulando git pull.', {
-        metadata: { area: 'iniciarMyZap', dirPath },
-      });
-    } else {
-      info('Diretorio .git nao encontrado, pulando git pull', {
-        metadata: { area: 'iniciarMyZap', dirPath },
-      });
-    }
-
     const pnpmRunner = await getPnpmCommand();
     if (!pnpmRunner) {
       return {
@@ -225,9 +192,14 @@ async function iniciarMyZap(dirPath, options = {}) {
     });
 
     let childError = null;
+    let resolveChildExit;
+    const childExited = new Promise((resolve) => {
+      resolveChildExit = resolve;
+    });
 
     child.on('error', (err) => {
       childError = err;
+      resolveChildExit();
     });
 
     child.on('exit', (code, signal) => {
@@ -247,6 +219,7 @@ async function iniciarMyZap(dirPath, options = {}) {
       if (myzapChildProcess === child) {
         myzapChildProcess = null;
       }
+      resolveChildExit();
     });
 
     reportProgress('Aguardando MyZap abrir a porta local...', 'wait_port', {
@@ -254,7 +227,24 @@ async function iniciarMyZap(dirPath, options = {}) {
       dirPath,
       porta,
     });
-    const abriuPorta = await aguardarPorta(porta, 180000, 1500);
+    // Early-exit: se o processo morrer no meio, nao esperamos os 180s inteiros
+    // pela porta — antes, um crash em 5s virava 3 minutos de tela travada.
+    const resultadoEspera = await Promise.race([
+      aguardarPorta(porta, 180000, 1500).then((ok) => (ok ? 'porta_aberta' : 'timeout')),
+      childExited.then(() => 'processo_finalizou'),
+    ]);
+
+    let abriuPorta = resultadoEspera === 'porta_aberta';
+    if (resultadoEspera === 'processo_finalizou') {
+      // Ultima checagem: em cenarios raros o servico pode ter subido por outro
+      // caminho (ex.: instancia previa) mesmo com o child finalizando.
+      await wait(1000);
+      const [portaAtivaPosExit, httpAtivoPosExit] = await Promise.all([
+        isPortInUse(porta),
+        isLocalHttpServiceReachable({ timeoutMs: 2000 }),
+      ]);
+      abriuPorta = portaAtivaPosExit || httpAtivoPosExit;
+    }
 
     if (!abriuPorta) {
       transition('error', {
@@ -296,4 +286,4 @@ async function iniciarMyZap(dirPath, options = {}) {
   }
 }
 
-module.exports = { iniciarMyZap, killMyZapProcess };
+module.exports = { iniciarMyZap, killMyZapProcess, stopMyZapAndFreePort };

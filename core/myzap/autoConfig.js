@@ -14,6 +14,8 @@ const clonarRepositorio = require('./clonarRepositorio');
 const atualizarEnv = require('./atualizarEnv');
 const updateIaConfig = require('./api/updateIaConfig');
 const { transition, forceTransition, getState } = require('./stateMachine');
+const { withLifecycleLock } = require('./opLock');
+const { getOrCreateLocalToken, buildEnvContent } = require('./envTemplate');
 const {
     parseBooleanLike,
     buildBackendProfileKey,
@@ -29,11 +31,9 @@ const {
 const store = new Store();
 const REMOTE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const LAST_REMOTE_SYNC_KEY = 'myzap_lastRemoteConfigSyncAt';
-const ENSURE_STALE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_DEBUG_TEXT_LENGTH = 12000;
 const MAX_DEBUG_ITEMS = 80;
 let ensureInFlight = null;
-let ensureInFlightStartedAt = 0;
 let lastRemoteConfigDebug = {
     generatedAt: Date.now(),
     success: false,
@@ -247,34 +247,6 @@ function normalizeIntegrationMode(value) {
         return 'web';
     }
 
-    return '';
-}
-
-function buildDefaultEnv({ sessionKey, myzapApiToken }) {
-    return [
-        '# Arquivo .env gerado automaticamente pelo Gerenciador MyZap',
-        'NODE_ENV=production',
-        'PORT=5555',
-        '',
-        `SESSION_NAME=${sessionKey}`,
-        `SESSION_KEY=${sessionKey}`,
-        `SESSIONKEY=${sessionKey}`,
-        '',
-        `API_TOKEN=${myzapApiToken}`,
-        `APITOKEN=${myzapApiToken}`,
-        ''
-    ].join('\n');
-}
-
-function getBundledEnvContent() {
-    const envPath = path.join(__dirname, 'configs', '.env');
-    try {
-        if (fs.existsSync(envPath)) {
-            return fs.readFileSync(envPath, 'utf8');
-        }
-    } catch (_e) {
-        // fallback para default dinÃ¢mico
-    }
     return '';
 }
 
@@ -747,11 +719,17 @@ async function prepareAutoConfig(options = {}) {
         || currentModoIntegracao
         || 'local';
     const rodarLocal = modoIntegracao === 'local';
+    // Precedencia do .env: backend remoto -> cache local -> template gerado
+    // em codigo com TOKEN unico desta maquina (sem segredos comitados).
     const envContent = (
         remote?.data?.envContent
         || currentEnvContent
-        || getBundledEnvContent()
-        || (sessionKey && myzapApiToken ? buildDefaultEnv({ sessionKey, myzapApiToken }) : '')
+        || buildEnvContent({
+            token: getOrCreateLocalToken(store, myzapDiretorio),
+            promptId,
+            openaiKey: '',
+            emailToken: ''
+        })
     ).trim();
 
     // Sincronizar myzap_apiToken com o TOKEN real do .env
@@ -899,25 +877,17 @@ async function syncIaSettingsInMyZap(preparedData = {}) {
 }
 
 async function ensureMyZapReadyAndStart(options = {}) {
+    // Dedup: chamadas concorrentes recebem a MESMA promise em andamento.
+    // O controle de "operacao travada" agora e do opLock (heartbeat + stale),
+    // que nao mata um pnpm install legitimo de 10-15min em maquina fraca.
     if (ensureInFlight) {
-        // Detecta operacao travada (stale) apos 2 minutos
-        const elapsed = Date.now() - ensureInFlightStartedAt;
-        if (elapsed > ENSURE_STALE_TIMEOUT_MS) {
-            warn('ensureMyZapReadyAndStart: operacao anterior considerada stale, resetando', {
-                metadata: { area: 'autoConfig', elapsedMs: elapsed }
-            });
-            ensureInFlight = null;
-            ensureInFlightStartedAt = 0;
-        } else {
-            info('MyZap start: operacao ja em andamento, aguardando mesma execucao', {
-                metadata: { area: 'autoConfig', options, elapsedMs: elapsed }
-            });
-            return ensureInFlight;
-        }
+        info('MyZap start: operacao ja em andamento, aguardando mesma execucao', {
+            metadata: { area: 'autoConfig', options }
+        });
+        return ensureInFlight;
     }
 
-    ensureInFlightStartedAt = Date.now();
-    ensureInFlight = (async () => {
+    ensureInFlight = withLifecycleLock('ensure', async () => {
         transition('checking_config', { message: 'Iniciando sincronizacao do MyZap...' });
         startProgress('Iniciando sincronizacao do MyZap...', 'start', { options });
 
@@ -1042,9 +1012,8 @@ async function ensureMyZapReadyAndStart(options = {}) {
             syncIa: syncIaResult?.status || 'error',
             syncIaMessage: syncIaResult?.message || 'Falha ao sincronizar configuracao de IA.'
         };
-    })().finally(() => {
+    }).finally(() => {
         ensureInFlight = null;
-        ensureInFlightStartedAt = 0;
     });
 
     return ensureInFlight;
@@ -1120,6 +1089,8 @@ async function refreshRemoteConfigAndSyncIa() {
 
 module.exports = {
     getDefaultMyZapDirectory,
+    resolveMyZapDirectory,
+    isValidInstalledMyZapDirectory,
     getAutoConfigDebugSnapshot,
     prepareAutoConfig,
     ensureMyZapReadyAndStart,

@@ -1,15 +1,17 @@
-const { Menu, Tray } = require('electron');
+const { Menu, Tray, Notification, nativeImage } = require('electron');
 
 let trayInstance = null;
 let actions = null;
 let getMyzapStatus = () => false;
 let appVersion = '?.?.?';
+let trayIconPath = null;
 
 function buildMenuTemplate(myzapAtivo, callbacks) {
   const {
     createSettings,
     toggleMyzap,
     updateMyZapNow,
+    repararMyZapAgora,
     createPainelMyZap,
     createFilaMyZap,
     openLogViewer,
@@ -25,6 +27,11 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
     {
       label: myzapAtivo ? '🟢  MyZap ativo' : '🔴  MyZap pausado',
       click: toggleMyzap
+    },
+    {
+      label: '🛠️  Reparar MyZap agora',
+      click: () => repararMyZapAgora?.(),
+      enabled: !!repararMyZapAgora
     },
     { label: '🔄  Atualizar MyZap agora', click: updateMyZapNow },
     { label: '💬  Painel MyZap', click: createPainelMyZap },
@@ -47,6 +54,7 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
 function init(iconPath, callbackSet, version = '?.?.?', myzapStatusState) {
   actions = callbackSet;
   appVersion = version;
+  trayIconPath = iconPath;
 
   if (typeof myzapStatusState === 'function') {
     getMyzapStatus = myzapStatusState;
@@ -56,6 +64,32 @@ function init(iconPath, callbackSet, version = '?.?.?', myzapStatusState) {
   trayInstance.setToolTip(`Gerenciador MyZap  v${version}`);
   rebuildMenu();
   return trayInstance;
+}
+
+/**
+ * Notificacao para o usuario a partir da bandeja: balao nativo no Windows,
+ * Notification do Electron nas demais plataformas (ou se o balao falhar).
+ */
+function notify(message, title = 'Gerenciador MyZap') {
+  const body = String(message || '').trim();
+  if (!body) {
+    return;
+  }
+
+  if (process.platform === 'win32' && trayInstance) {
+    try {
+      trayInstance.displayBalloon({
+        title,
+        content: body,
+        icon: trayIconPath ? nativeImage.createFromPath(trayIconPath) : undefined
+      });
+      return;
+    } catch (_e) { /* cai no fallback */ }
+  }
+
+  try {
+    new Notification({ title, body, icon: trayIconPath || undefined }).show();
+  } catch (_e) { /* melhor esforco */ }
 }
 
 function rebuildMenu() {
@@ -69,5 +103,6 @@ function rebuildMenu() {
 
 module.exports = {
   init,
-  rebuildMenu
+  rebuildMenu,
+  notify
 };

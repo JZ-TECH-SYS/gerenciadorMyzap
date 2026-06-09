@@ -1,6 +1,5 @@
-const { iniciarMyZap } = require('./iniciarMyZap');
-const { info, warn, error } = require('./myzapLogger');
-const { killProcessesOnPort, isPortInUse } = require('./processUtils');
+const { iniciarMyZap, stopMyZapAndFreePort } = require('./iniciarMyZap');
+const { error } = require('./myzapLogger');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 
@@ -29,25 +28,13 @@ async function atualizarEnv(dirPath, envContent, options = {}) {
             percent: 78,
             dirPath
         });
-        const killResult = killProcessesOnPort(5555);
-        if (killResult.killed.length > 0) {
-            info('Processos finalizados na porta 5555 para reinicio do MyZap', {
-                metadata: { killed: killResult.killed }
-            });
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-
-        if (killResult.failed.length > 0) {
-            warn('Nao foi possivel finalizar alguns processos na porta 5555', {
-                metadata: { failed: killResult.failed }
-            });
-        }
-
-        const portaAindaOcupada = await isPortInUse(5555);
-        if (portaAindaOcupada) {
+        // Mata a arvore do processo rastreado + varre a porta e ESPERA ela
+        // liberar de verdade (poll), em vez do antigo sleep cego de 1s.
+        const { portFree } = await stopMyZapAndFreePort({ timeoutMs: 15000 });
+        if (!portFree) {
             return {
                 status: 'error',
-                message: 'Porta 5555 ainda em uso. Feche o processo atual do MyZap e tente novamente.'
+                message: 'Porta 5555 ainda em uso apos finalizar os processos. Feche o processo atual do MyZap e tente novamente.'
             };
         }
 

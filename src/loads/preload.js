@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('api', {
   verifyRealStatus: () => ipcRenderer.invoke('myzap:verifyRealStatus'),
   startSession: () => ipcRenderer.invoke('myzap:startSession'),
   deleteSession: () => ipcRenderer.invoke('myzap:deleteSession'),
+  getSessionSnapshot: () => ipcRenderer.invoke('myzap:getSessionSnapshot'),
+  connectSession: () => ipcRenderer.invoke('myzap:connectSession'),
+  forceReconnect: () => ipcRenderer.invoke('myzap:forceReconnect'),
   updateIaConfig: (mensagemPadrao) => ipcRenderer.invoke('myzap:updateIaConfig', mensagemPadrao),
   getCapabilitySnapshot: () => ipcRenderer.invoke('myzap:getCapabilitySnapshot'),
   saveCapabilityPreferences: (preferences) => ipcRenderer.invoke('myzap:saveCapabilityPreferences', preferences),
@@ -28,6 +31,8 @@ contextBridge.exposeInMainWorld('api', {
   readEnvSecrets: () => ipcRenderer.invoke('myzap:readEnvSecrets'),
   resetEnvironment: (options) => ipcRenderer.invoke('myzap:resetEnvironment', options),
   getStateSnapshot: () => ipcRenderer.invoke('myzap:getStateSnapshot'),
+  getSupervisorStatus: () => ipcRenderer.invoke('myzap:getSupervisorStatus'),
+  repairService: () => ipcRenderer.invoke('myzap:repairService'),
   clearUserRemovedFlag: () => ipcRenderer.invoke('myzap:clearUserRemovedFlag'),
   checkForUpdates: () => ipcRenderer.invoke('myzap:checkForUpdates'),
   sendTestMessage: (number, text) => ipcRenderer.invoke('myzap:sendTestMessage', number, text)

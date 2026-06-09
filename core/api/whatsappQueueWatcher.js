@@ -9,9 +9,12 @@ const {
 } = require('../myzap/capabilities');
 // Ritmo humano (intervalo entre msgs, janela de horario, teto diario) vindo do backend.
 const { getRitmo, refreshRitmoIfStale } = require('./ritmoConfig');
+const { getMyZapApiBaseUrls } = require('../myzap/api/requestMyZapApi');
 
 const store = new Store();
-const MYZAP_API_URL = 'http://localhost:5555/';
+// 127.0.0.1 (e nao "localhost", que pode resolver para ::1 no Windows e dar
+// timeout num MyZap que escuta so IPv4). Lista vem do helper central.
+const MYZAP_API_URL = getMyZapApiBaseUrls()[0] || 'http://127.0.0.1:5555/';
 const LOOP_INTERVAL_MS = 3000;
 const FETCH_TIMEOUT_MS = 15000;
 // O ciclo pode durar mais agora que o ritmo HUMANO (segundos entre msgs) e aplicado
@@ -199,8 +202,53 @@ let ultimoErro = null;
 let ultimoLote = 0;
 let ultimosPendentes = [];
 let consecutiveSkips = 0;
+// A partir deste numero de skips a fila entra em estado PAUSADO-AGUARDANDO
+// (motivoPausa) — ela NUNCA mais se auto-desliga: o loop continua barato
+// (backoff com teto) e retoma sozinho quando o MyZap/credenciais voltarem.
 const MAX_CONSECUTIVE_SKIPS = 10;
 const SKIP_LOG_EVERY = 5;
+
+// 'aguardando_myzap' | 'aguardando_credenciais' | null
+let motivoPausa = null;
+let notifyCallback = null;
+let ultimoToastPausaAt = 0;
+const PAUSA_TOAST_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** Injetado pelo main.js (tray.notify) para avisar pausa/retomada da fila. */
+function setQueueNotifier(fn) {
+  notifyCallback = (typeof fn === 'function') ? fn : null;
+}
+
+function notificarFila(mensagem, { comCooldown = false } = {}) {
+  if (!notifyCallback) return;
+  if (comCooldown) {
+    const agora = Date.now();
+    if (agora - ultimoToastPausaAt < PAUSA_TOAST_COOLDOWN_MS) return;
+    ultimoToastPausaAt = agora;
+  }
+  try {
+    notifyCallback(mensagem);
+  } catch (_e) { /* melhor esforco */ }
+}
+
+function entrarEmPausa(motivo, mensagem) {
+  if (motivoPausa === motivo) return;
+  motivoPausa = motivo;
+  warn(`[FilaMyZap] Fila pausada (${motivo}) — retoma sozinha quando resolver`, {
+    metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher', motivo, consecutiveSkips }
+  });
+  notificarFila(mensagem, { comCooldown: true });
+}
+
+function sairDaPausa() {
+  if (!motivoPausa) return;
+  const motivoAnterior = motivoPausa;
+  motivoPausa = null;
+  info('[FilaMyZap] Fila retomada automaticamente', {
+    metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher', motivoAnterior }
+  });
+  notificarFila('Fila de mensagens retomada: MyZap respondendo novamente.');
+}
 
 function normalizeBaseUrl(url) {
   if (!url || typeof url !== 'string') return '';
@@ -650,13 +698,11 @@ async function processarFilaUmaRodada() {
           metadata: { categoria: 'conexao', consecutiveSkips, backoffMs: atraso }
         });
       }
-      // Auto-stop apenas como salvaguarda final; continua recuperavel se as
-      // credenciais voltarem antes do limite.
+      // A fila NUNCA se auto-desliga: entra em pausa visivel e retoma sozinha
+      // quando as credenciais voltarem (antes, 10 skips matavam a fila em silencio).
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
-        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos`, {
-          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
-        });
-        stopWhatsappQueueWatcher();
+        entrarEmPausa('aguardando_credenciais',
+          'Fila de mensagens pausada: aguardando credenciais do MyZap. Ela retoma sozinha.');
       }
       return;
     }
@@ -671,10 +717,8 @@ async function processarFilaUmaRodada() {
         });
       }
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
-        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos (MyZap down)`, {
-          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
-        });
-        stopWhatsappQueueWatcher();
+        entrarEmPausa('aguardando_myzap',
+          'Fila de mensagens pausada: aguardando o MyZap voltar a responder. Ela retoma sozinha.');
       }
       return;
     }
@@ -688,6 +732,7 @@ async function processarFilaUmaRodada() {
     }
     consecutiveSkips = 0;
     limparBackoff();
+    sairDaPausa();
 
     // Ritmo humano (intervalo entre msgs, janela de horario, teto diario) vem do
     // backend. Revalida no maximo 1x/min (no-op nas demais chamadas deste loop de 3s).
@@ -961,6 +1006,7 @@ function stopWhatsappQueueWatcher() {
 
   ativo = false;
   processando = false;
+  motivoPausa = null;
 
   info('Watcher da fila MyZap parado', {
     metadata: { area: 'whatsappQueueWatcher' }
@@ -989,6 +1035,9 @@ function getWhatsappQueueWatcherStatus() {
     ultimoErroDetalhe: store.get(STORE_ULTIMO_ERRO_KEY) || null,
     backoffAteEm: backoffAteEm || null,
     consecutiveSkips,
+    // 'aguardando_myzap' | 'aguardando_credenciais' | null — pausa recuperavel
+    // (substitui o antigo auto-stop definitivo apos 10 skips).
+    motivoPausa,
     // Ritmo humano vigente + progresso do teto diario (para o painel da fila).
     ritmo,
     enviadosHoje: getEnviosHoje(),
@@ -1007,5 +1056,6 @@ module.exports = {
   startWhatsappQueueWatcher,
   stopWhatsappQueueWatcher,
   getWhatsappQueueWatcherStatus,
-  processarFilaUmaRodada
+  processarFilaUmaRodada,
+  setQueueNotifier
 };

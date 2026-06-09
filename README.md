@@ -6,17 +6,23 @@ Aplicação desktop **Electron** para gerenciamento do serviço **MyZap** — in
 
 ## Funcionalidades
 
-- **Instalação automatizada** do MyZap (download do pacote oficial, instalação de dependências via runtime interno, configuração do `.env`)
+- **Instalação automatizada** do MyZap (download do pacote oficial via ZIP, instalação de dependências via runtime interno, configuração do `.env`) — **zero dependência externa**: não precisa de Git nem Node.js no PC do cliente
+- **Supervisor (watchdog)** — health-check do MyZap a cada 15s via `GET /health`; se travar, recupera sozinho em escada: restart → kill da árvore de processos → reinstalação preservando dados (a sessão do WhatsApp reconecta sozinha). Circuit breaker evita loop infinito de restart
+- **Conexão com auto-recuperação** — sessão que não gera QR Code (zumbi) é encerrada e reiniciada automaticamente; erros sempre visíveis no painel com botão **Forçar reconexão**
+- **Atualização do MyZap por commit** — compara o SHA da `main` no GitHub (boot + a cada 6h) e atualiza com troca atômica de diretório + rollback, preservando `.env`, banco e sessão
 - **Painel de controle** (3 abas):
   - **MyZap** — status da API, QR Code, iniciar/deletar sessão WhatsApp
   - **Status** — monitoramento em tempo real da conexão
   - **Configuração** — diretório, chaves de sessão/API, configuração do ClickExpress
-- **Fila de mensagens** — visualização e controle do watcher de envio automático (integração ClickExpress)
+- **Fila de mensagens** — watcher de envio com ritmo humanizado; nunca se auto-desliga: se o MyZap cair, entra em pausa visível e **retoma sozinha** quando ele voltar
 - **Watcher de status** — envia o status da conexão ao ClickExpress a cada 10 segundos
-- **Watcher de fila** — processa mensagens pendentes a cada 30 segundos
 - **Visualizador de logs** — logs em tempo real com filtro por nível (info/warn/error/debug) e busca
-- **Auto-update** — atualização automática via GitHub Releases (electron-updater)
-- **Ícone na bandeja do sistema** com menu rápido
+- **Auto-update educado** — atualização via GitHub Releases que espera o fim do lote de envio antes de reiniciar o app
+- **Botão "Reparar MyZap agora"** (bandeja e painel) — solução de 1 clique para o próprio cliente: reinicia o serviço na hora e, se preciso, reinstala preservando a sessão do WhatsApp
+- **Auto-reparo no upgrade** — no primeiro boot de cada versão nova, o app mata processos órfãos da versão anterior, limpa estado travado e sobe limpo (instalar a versão nova já resolve os problemas da antiga)
+- **Instalação por usuário (sem admin)** — instala em `%LOCALAPPDATA%`, atualizações silenciosas sem UAC; instalações antigas de Program Files recebem migração automática: o app baixa o Setup novo sozinho e oferece a troca com 1 clique
+- **Segurança** — o TOKEN do MyZap local é **único por máquina** (gerado na instalação); nenhum segredo versionado no repositório
+- **Ícone na bandeja do sistema** com menu rápido e notificações de recuperação/pausa
 
 ---
 
@@ -85,9 +91,14 @@ gerenciadorMyzap/
 │   │   └── myzap.js               # Todos os handlers IPC
 │   ├── myzap/
 │   │   ├── api/                   # Chamadas à API local MyZap (porta 5555)
+│   │   ├── supervisor.js          # Watchdog: health-check + escada de recuperação
+│   │   ├── opLock.js              # Mutex único do ciclo de vida (ensure/update/reset)
+│   │   ├── updateChecker.js       # Compara commit SHA da main (update sem Git)
+│   │   ├── updateMyZap.js         # Troca atômica de versão com rollback
+│   │   ├── envTemplate.js         # .env gerado em código (TOKEN único por máquina)
 │   │   ├── atualizarEnv.js        # Atualiza .env e reinicia serviço
 │   │   ├── clonarRepositorio.js   # Instalação completa do MyZap
-│   │   ├── iniciarMyZap.js        # Inicia serviço via pnpm
+│   │   ├── iniciarMyZap.js        # Inicia serviço via pnpm (Node = shim do Electron)
 │   │   └── verificarDiretorio.js  # Verifica instalação
 │   ├── utils/
 │   │   └── logger.js              # Logger JSON Lines

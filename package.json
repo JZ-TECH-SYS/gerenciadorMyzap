@@ -1,7 +1,7 @@
 {
   "name": "gerenciador-myzap",
   "description": "Gerenciador MyZap — disparo automático de mensagens via WhatsApp",
-  "version": "1.6.2",
+  "version": "2.0.0",
   "main": "main.js",
   "author": {
     "name": "JZ-TECH-SYS",
@@ -75,14 +75,15 @@
     },
     "nsis": {
       "oneClick": false,
-      "perMachine": true,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Gerenciador MyZap",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerHeaderIcon": "assets/icon.ico",
+      "include": "build/installer.nsh"
     },
     "publish": [
       {

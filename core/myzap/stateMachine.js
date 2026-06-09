@@ -2,9 +2,8 @@
  * Maquina de estados centralizada do modulo MyZap.
  *
  * Estados possiveis:
- *   idle, checking_config, installing_git, installing_node,
- *   cloning_repo, installing_dependencies, starting_service,
- *   running, error, resetting
+ *   idle, checking_config, cloning_repo, installing_dependencies,
+ *   starting_service, running, recovering, error, resetting
  *
  * Todas as transicoes sao validadas contra um mapa de transicoes permitidas.
  * Listeners sao notificados a cada mudanca de estado (IPC push no main.js).
@@ -15,12 +14,11 @@ const { info, warn, debug } = require('./myzapLogger');
 const VALID_STATES = [
     'idle',
     'checking_config',
-    'installing_git',
-    'installing_node',
     'cloning_repo',
     'installing_dependencies',
     'starting_service',
     'running',
+    'recovering',
     'error',
     'resetting'
 ];
@@ -30,23 +28,20 @@ const VALID_STATES = [
  * Chave = estado atual, valor = array de estados destino validos.
  */
 const TRANSITIONS = {
-    idle: ['checking_config', 'resetting'],
+    idle: ['checking_config', 'recovering', 'resetting'],
     checking_config: [
         'cloning_repo',
-        'installing_git',
-        'installing_node',
         'starting_service',
         'running',
         'error',
         'idle'
     ],
-    installing_git: ['installing_node', 'cloning_repo', 'checking_config', 'error', 'resetting'],
-    installing_node: ['cloning_repo', 'checking_config', 'error', 'resetting'],
     cloning_repo: ['installing_dependencies', 'error', 'resetting'],
     installing_dependencies: ['starting_service', 'error', 'resetting'],
     starting_service: ['running', 'error', 'resetting'],
-    running: ['error', 'resetting', 'idle', 'checking_config'],
-    error: ['idle', 'resetting', 'checking_config'],
+    running: ['error', 'resetting', 'idle', 'checking_config', 'recovering'],
+    recovering: ['starting_service', 'cloning_repo', 'checking_config', 'running', 'error', 'resetting'],
+    error: ['idle', 'resetting', 'checking_config', 'recovering'],
     resetting: ['idle', 'error']
 };
 
@@ -54,12 +49,11 @@ const TRANSITIONS = {
 const STATE_LABELS = {
     idle: 'Ocioso',
     checking_config: 'Verificando configuracao...',
-    installing_git: 'Instalando Git...',
-    installing_node: 'Instalando Node.js...',
-    cloning_repo: 'Clonando repositorio...',
+    cloning_repo: 'Baixando MyZap...',
     installing_dependencies: 'Instalando dependencias...',
     starting_service: 'Iniciando servico...',
     running: 'Em execucao',
+    recovering: 'Recuperando servico...',
     error: 'Erro',
     resetting: 'Resetando ambiente...'
 };
@@ -68,12 +62,11 @@ const STATE_LABELS = {
 const STATE_PROGRESS = {
     idle: 0,
     checking_config: 10,
-    installing_git: 20,
-    installing_node: 30,
     cloning_repo: 40,
     installing_dependencies: 60,
     starting_service: 80,
     running: 100,
+    recovering: 70,
     error: 0,
     resetting: 50
 };
@@ -253,11 +246,10 @@ function notifyListeners(state, previous, metadata) {
 function isSetupInProgress() {
     return [
         'checking_config',
-        'installing_git',
-        'installing_node',
         'cloning_repo',
         'installing_dependencies',
         'starting_service',
+        'recovering',
         'resetting'
     ].includes(currentState);
 }

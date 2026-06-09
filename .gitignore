@@ -4,3 +4,9 @@ node_modules
 dist
 nul
 tmpclaude-*
+
+# Segredos/dados locais do MyZap — NUNCA comitar (o seed versionado e o
+# db.seed.sqlite vazio; o .env e gerado por maquina em core/myzap/envTemplate.js)
+core/myzap/configs/.env
+core/myzap/configs/db.sqlite
+core/myzap/database/

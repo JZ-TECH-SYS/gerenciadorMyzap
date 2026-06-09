@@ -1,14 +1,13 @@
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
 const Store = require('electron-store');
 const { info, warn, error } = require('./myzapLogger');
-const { killProcessesOnPort, commandExists, isPortInUse } = require('./processUtils');
+const { killProcessesOnPort, isPortInUse, waitForPortFree } = require('./processUtils');
 const { getDefaultMyZapDirectory } = require('./autoConfig');
 const { killMyZapProcess } = require('./iniciarMyZap');
 const { transition, forceTransition } = require('./stateMachine');
 const { clearProgress } = require('./progress');
+const { withLifecycleLock } = require('./opLock');
 
 const store = new Store();
 const KILL_RETRY_ATTEMPTS = 3;
@@ -68,150 +67,6 @@ function removeDirectory(targetPath) {
     }
 }
 
-function runCommand(command, args = [], options = {}) {
-    return new Promise((resolve) => {
-        const child = spawn(command, args, {
-            shell: true,
-            ...options
-        });
-
-        let stdout = '';
-        let stderr = '';
-
-        child.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-        child.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        child.on('error', (err) => {
-            resolve({
-                ok: false,
-                code: null,
-                stdout,
-                stderr,
-                error: err?.message || String(err)
-            });
-        });
-
-        child.on('close', (code) => {
-            resolve({
-                ok: code === 0,
-                code,
-                stdout,
-                stderr,
-                error: null
-            });
-        });
-    });
-}
-
-async function tryUninstallToolsWindows() {
-    if (!(await commandExists('winget'))) {
-        return {
-            attempted: false,
-            status: 'warning',
-            message: 'winget nao encontrado. Remocao de Git/Node nao executada.'
-        };
-    }
-
-    const packageIds = [
-        'Git.Git',
-        'OpenJS.NodeJS.LTS',
-        'OpenJS.NodeJS'
-    ];
-
-    const results = [];
-    for (const pkg of packageIds) {
-        const result = await runCommand('winget', [
-            'uninstall',
-            '--id',
-            pkg,
-            '-e',
-            '--silent',
-            '--disable-interactivity'
-        ]);
-        results.push({
-            packageId: pkg,
-            ...result
-        });
-    }
-
-    const successCount = results.filter((item) => item.ok).length;
-    const hasAnySuccess = successCount > 0;
-    return {
-        attempted: true,
-        status: hasAnySuccess ? 'success' : 'warning',
-        message: hasAnySuccess
-            ? 'Tentativa de remocao de Git/Node concluida no Windows (verifique resultados).'
-            : 'Nao foi possivel remover Git/Node automaticamente no Windows.',
-        results
-    };
-}
-
-async function tryUninstallToolsLinux() {
-    if (!(await commandExists('sudo')) || !(await commandExists('apt'))) {
-        return {
-            attempted: false,
-            status: 'warning',
-            message: 'Remocao automatica de Git/Node no Linux requer sudo+apt.'
-        };
-    }
-
-    const result = await runCommand('sudo', ['-n', 'apt', 'remove', '-y', 'git', 'nodejs', 'npm']);
-    return {
-        attempted: true,
-        status: result.ok ? 'success' : 'warning',
-        message: result.ok
-            ? 'Git/Node removidos via apt.'
-            : 'Nao foi possivel remover Git/Node no Linux sem interacao (sudo -n).',
-        results: [result]
-    };
-}
-
-async function tryUninstallToolsMac() {
-    if (!(await commandExists('brew'))) {
-        return {
-            attempted: false,
-            status: 'warning',
-            message: 'Homebrew nao encontrado. Remocao de Git/Node nao executada.'
-        };
-    }
-
-    const commands = [
-        ['brew', ['uninstall', 'git']],
-        ['brew', ['uninstall', 'node']]
-    ];
-
-    const results = [];
-    for (const [command, args] of commands) {
-        const result = await runCommand(command, args);
-        results.push(result);
-    }
-
-    const hasAnySuccess = results.some((item) => item.ok);
-    return {
-        attempted: true,
-        status: hasAnySuccess ? 'success' : 'warning',
-        message: hasAnySuccess
-            ? 'Tentativa de remocao de Git/Node concluida no macOS (verifique resultados).'
-            : 'Nao foi possivel remover Git/Node automaticamente no macOS.',
-        results
-    };
-}
-
-async function tryUninstallToolsByPlatform() {
-    const platform = os.platform();
-    if (platform === 'win32') {
-        return tryUninstallToolsWindows();
-    }
-    if (platform === 'darwin') {
-        return tryUninstallToolsMac();
-    }
-    return tryUninstallToolsLinux();
-}
-
 function clearMyZapStoreKeys() {
     const keys = [
         'myzap_diretorio',
@@ -246,8 +101,13 @@ function clearMyZapStoreKeys() {
 }
 
 async function resetMyZapEnvironment(options = {}) {
+    // Reset compartilha o mutex de ciclo de vida: nunca roda por cima de uma
+    // instalacao/start/recovery em andamento.
+    return withLifecycleLock('reset', () => doResetMyZapEnvironment(options));
+}
+
+async function doResetMyZapEnvironment(options = {}) {
     const removeTools = Boolean(options.removeTools);
-    const confirmToolRemoval = Boolean(options.confirmToolRemoval);
     const storedPath = String(store.get('myzap_diretorio') || '').trim();
     const defaultPath = getDefaultMyZapDirectory();
     const directories = unique([storedPath, defaultPath]);
@@ -259,7 +119,6 @@ async function resetMyZapEnvironment(options = {}) {
         metadata: {
             area: 'resetEnvironment',
             removeTools,
-            confirmToolRemoval,
             directories
         }
     });
@@ -298,10 +157,9 @@ async function resetMyZapEnvironment(options = {}) {
             }
         }
 
-        // 2b. Aguardar liberacao de file locks no Windows antes de remover diretorios
-        if (process.platform === 'win32') {
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-        }
+        // 2b. Esperar a porta liberar de verdade (poll) antes de remover diretorios —
+        // o sqlite/Node solta os file locks junto com o processo.
+        await waitForPortFree(5555, { timeoutMs: 10000 });
 
         // 3. Remover diretorios
         const directoryResults = directories.map((dir) => removeDirectory(dir));
@@ -315,15 +173,14 @@ async function resetMyZapEnvironment(options = {}) {
         // 4c. Marcar que usuario removeu explicitamente (impede auto-install)
         store.set('myzap_userRemovedLocal', true);
 
-        // 5. Desinstalar ferramentas (apenas se confirmado)
+        // 5. Remocao de Git/Node descontinuada: o gerenciador nao depende mais
+        // de ferramentas externas (Node = shim do Electron, download = ZIP).
         let toolsResult = null;
-        if (removeTools && confirmToolRemoval) {
-            toolsResult = await tryUninstallToolsByPlatform();
-        } else if (removeTools && !confirmToolRemoval) {
+        if (removeTools) {
             toolsResult = {
                 attempted: false,
                 status: 'warning',
-                message: 'Remocao de ferramentas solicitada mas nao confirmada pelo usuario.'
+                message: 'Remocao de Git/Node descontinuada: o Gerenciador nao instala mais essas ferramentas.'
             };
         }
 

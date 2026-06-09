@@ -6,11 +6,28 @@ const { debug, warn } = require('../myzapLogger');
 
 const store = new Store();
 const LAST_QR_SNAPSHOT_KEY = 'myzap_lastQrSnapshot';
+// TTL e apenas a SEGUNDA linha de defesa: a invalidacao primaria e por
+// conteudo (sessionKey trocou / sessao conectou ou sumiu / QR novo chegou).
 const LAST_QR_MAX_AGE_MS = 45 * 1000;
+
+function getCurrentSessionKey() {
+    return String(store.get('myzap_sessionKey') || '').trim();
+}
+
+function clearCachedQr() {
+    store.delete(LAST_QR_SNAPSHOT_KEY);
+}
 
 function readCachedQr() {
     const value = store.get(LAST_QR_SNAPSHOT_KEY);
     if (!value || typeof value !== 'object') return null;
+
+    // QR pertence a OUTRA sessao => invalido
+    const cachedSessionKey = String(value.session_key || '').trim();
+    if (cachedSessionKey && cachedSessionKey !== getCurrentSessionKey()) {
+        clearCachedQr();
+        return null;
+    }
 
     const updatedAt = Number(value.updated_at || 0);
     if (!updatedAt || (Date.now() - updatedAt) > LAST_QR_MAX_AGE_MS) {
@@ -35,17 +52,19 @@ function persistCachedQr(sessionStatus, qrCode) {
         store.set(LAST_QR_SNAPSHOT_KEY, {
             session_status: normalizedStatus || 'waiting_qr',
             qr_code: normalizedQr,
+            session_key: getCurrentSessionKey(),
             updated_at: Date.now()
         });
         return;
     }
 
     if (['connected', 'not_found'].includes(normalizedStatus)) {
-        store.delete(LAST_QR_SNAPSHOT_KEY);
+        clearCachedQr();
     }
 }
 
-async function getSessionSnapshot() {
+async function getSessionSnapshot(options = {}) {
+    const allowCachedQr = options.allowCachedQr !== false;
     let verifyPayload = null;
     let connectionPayload = null;
 
@@ -78,7 +97,7 @@ async function getSessionSnapshot() {
     const merged = mergeSessionPayloads(verifyParsed, connectionParsed);
 
     let qrCode = merged.qrCode || '';
-    if (!qrCode && merged.sessionStatus === 'waiting_qr') {
+    if (!qrCode && allowCachedQr && merged.sessionStatus === 'waiting_qr') {
         const cached = readCachedQr();
         if (cached?.qrCode) {
             qrCode = cached.qrCode;
@@ -115,4 +134,4 @@ async function getSessionSnapshot() {
     };
 }
 
-module.exports = getSessionSnapshot;
+module.exports = { getSessionSnapshot, clearCachedQr };

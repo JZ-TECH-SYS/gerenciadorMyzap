@@ -162,6 +162,60 @@ function killPid(pid) {
   }
 }
 
+/**
+ * Mata um processo E toda a sua arvore de filhos.
+ * No Windows, `child.kill('SIGTERM')` mata so o pai (ex.: pnpm) e deixa o
+ * `node index.js` filho vivo segurando a porta — causa classica de restart
+ * travado. taskkill /T derruba a arvore inteira; no Unix, pkill -P pega os
+ * filhos diretos antes do kill no pai.
+ */
+function killProcessTree(pid) {
+  if (!pid || pid <= 0 || pid === process.pid) {
+    return false;
+  }
+
+  try {
+    if (os.platform() === 'win32') {
+      execSync(`taskkill /T /F /PID ${pid}`, { stdio: ['ignore', 'pipe', 'pipe'] });
+      return true;
+    }
+
+    try {
+      execSync(`pkill -9 -P ${pid}`, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (_e) { /* sem filhos ou pkill ausente */ }
+
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch (_e) {
+      return false;
+    }
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Aguarda a porta ficar realmente livre (poll), no lugar de sleeps cegos.
+ * Retorna true se liberou dentro do timeout.
+ */
+async function waitForPortFree(port, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000;
+  const intervalMs = Number.isFinite(options.intervalMs) ? options.intervalMs : 400;
+  const inicio = Date.now();
+
+  for (;;) {
+    const inUse = await isPortInUse(port);
+    if (!inUse) {
+      return true;
+    }
+    if (Date.now() - inicio >= timeoutMs) {
+      return false;
+    }
+    await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
+  }
+}
+
 function killProcessesOnPort(port) {
   const pids = getPidsOnPort(port);
   const killed = [];
@@ -181,22 +235,6 @@ function killProcessesOnPort(port) {
     failed,
   };
 }
-
-/**
- * Caminhos conhecidos de instalacao no Windows.
- * Usado como fallback quando `where` falha (PATH desatualizado).
- */
-const KNOWN_PATHS_WIN = {
-  git: [
-    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'),
-    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'),
-    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'cmd', 'git.exe'),
-  ],
-  node: [
-    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
-    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'nodejs', 'node.exe'),
-  ],
-};
 
 function isElectronPackagedApp() {
   return Boolean(
@@ -220,27 +258,6 @@ function ensureDirectoryInPath(filePath) {
   if (!currentEntries.includes(dir)) {
     process.env.PATH = currentPath ? `${dir}${separator}${currentPath}` : dir;
   }
-}
-
-function getKnownCommandPath(command) {
-  if (os.platform() !== 'win32') {
-    return null;
-  }
-
-  const knownPaths = KNOWN_PATHS_WIN[command] || [];
-  const existingPath = knownPaths.find((filePath) => {
-    try {
-      return fs.existsSync(filePath);
-    } catch (_err) {
-      return false;
-    }
-  });
-
-  if (existingPath) {
-    ensureDirectoryInPath(existingPath);
-  }
-
-  return existingPath || null;
 }
 
 function normalizeBaseUrl(url) {
@@ -398,15 +415,11 @@ function resolveCommandPath(command) {
     });
     let stdout = '';
 
-    const resolveKnownPath = () => {
-      resolve(getKnownCommandPath(command));
-    };
-
     child.stdout.on('data', (data) => {
       stdout += data.toString();
     });
 
-    child.on('error', resolveKnownPath);
+    child.on('error', () => resolve(null));
     child.on('close', (code) => {
       if (code === 0) {
         const resolvedPath = stdout
@@ -421,7 +434,7 @@ function resolveCommandPath(command) {
         }
       }
 
-      resolveKnownPath();
+      resolve(null);
     });
   });
 }
@@ -579,21 +592,6 @@ async function getPnpmCommand() {
   return null;
 }
 
-async function getGitCommand() {
-  const gitPath = await resolveCommandPath('git');
-  if (!gitPath) {
-    return null;
-  }
-
-  return {
-    command: gitPath,
-    prefixArgs: [],
-    shell: false,
-    env: process.env,
-    source: 'system-git',
-  };
-}
-
 /**
  * Verifica se da pra ESCREVER no diretorio alvo (ou no ancestral existente mais
  * proximo). Usado para decidir se a instalacao local precisa MESMO de admin:
@@ -659,12 +657,13 @@ module.exports = {
   isPortInUse,
   isLocalHttpServiceReachable,
   killProcessesOnPort,
+  killProcessTree,
+  waitForPortFree,
   getPrivilegeStatus,
   buildAdminRequiredMessage,
   commandExists,
   resolveCommandPath,
   getPnpmCommand,
-  getGitCommand,
   refreshPathWindows,
   canWriteToDir,
   envWithNodeShim,
