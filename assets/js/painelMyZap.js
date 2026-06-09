@@ -2066,3 +2066,65 @@ async function instalarNovamente() {
     }
   }
 }
+
+// ===== Diagnóstico e manutenção (aba Configurações) =====
+
+function setDiagFeedback(type, message) {
+  const el = document.getElementById('diag-feedback');
+  if (!el) return;
+  const map = { info: 'alert-info', success: 'alert-success', warning: 'alert-warning', error: 'alert-danger' };
+  el.className = `alert ${map[type] || 'alert-secondary'} mb-3`;
+  el.textContent = message;
+  el.classList.remove('d-none');
+}
+
+async function buscarAtualizacao() {
+  const btn = document.getElementById('btn-check-updates');
+  try {
+    if (btn) btn.disabled = true;
+    setDiagFeedback('info', 'Buscando atualização...');
+    const r = await window.api.checkForUpdates();
+    if (r && r.status === 'error') {
+      setDiagFeedback('error', r.message || 'Falha ao buscar atualização.');
+    } else {
+      setDiagFeedback('success', (r && r.message) || 'Verificação iniciada. Se houver atualização, o app avisa e instala ao reiniciar.');
+    }
+  } catch (e) {
+    setDiagFeedback('error', 'Erro: ' + (e?.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function enviarMensagemTeste() {
+  const btn = document.getElementById('btn-test-send');
+  const input = document.getElementById('input-test-number');
+  const numero = (input?.value || '').trim();
+  if (!numero) {
+    setDiagFeedback('warning', 'Informe um número com DDD e país. Ex: 5511999999999');
+    return;
+  }
+  try {
+    if (btn) btn.disabled = true;
+    setDiagFeedback('info', 'Enviando mensagem de teste...');
+    const r = await window.api.sendTestMessage(numero, '');
+    if (r && r.status === 'success') {
+      setDiagFeedback('success', r.message || 'Mensagem de teste enviada!');
+    } else {
+      setDiagFeedback('error', (r && r.message) || 'Falha no envio.');
+    }
+  } catch (e) {
+    setDiagFeedback('error', 'Erro: ' + (e?.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Prefill do número de teste com o último usado (se houver).
+(async () => {
+  try {
+    const n = await window.api.getStore('myzap_testNumber');
+    const input = document.getElementById('input-test-number');
+    if (input && n) input.value = String(n);
+  } catch (_e) { /* ignore */ }
+})();

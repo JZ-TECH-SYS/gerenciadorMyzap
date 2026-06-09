@@ -10,6 +10,7 @@ const startSession = require('../myzap/api/startSession');
 const deleteSession = require('../myzap/api/deleteSession');
 const verifyRealStatus = require('../myzap/api/verifyRealStatus');
 const updateIaConfig = require('../myzap/api/updateIaConfig');
+const { getMyZapApiBaseUrls } = require('../myzap/api/requestMyZapApi');
 const { iniciarMyZap } = require('../myzap/iniciarMyZap');
 const {
     prepareAutoConfig,
@@ -386,6 +387,63 @@ function registerMyZapHandlers(ipcMain) {
                 status: 'error',
                 message: error.message || String(error)
             };
+        }
+    });
+
+    // Envia uma mensagem de TESTE pro numero informado (use o proprio numero para
+    // validar o envio sem incomodar clientes). POST direto no /sendText do MyZap local.
+    ipcMain.handle('myzap:sendTestMessage', async (_event, numeroRaw, textoRaw) => {
+        try {
+            const sessionKey = String(envStore.get('myzap_sessionKey') || '').trim();
+            const apiToken = String(envStore.get('myzap_apiToken') || '').trim();
+            const numero = String(numeroRaw || '').replace(/\D/g, '');
+            const texto = String(textoRaw || '').trim()
+                || 'Teste de envio do Gerenciador MyZap. Se voce recebeu, o envio esta funcionando.';
+
+            if (!sessionKey || !apiToken) {
+                return { status: 'error', message: 'Sessao/token do MyZap nao configurados. Conecte o MyZap primeiro.' };
+            }
+            if (numero.length < 8) {
+                return { status: 'error', message: 'Informe um numero valido com DDD e pais. Ex: 5511999999999' };
+            }
+
+            envStore.set('myzap_testNumber', numero); // prefill na proxima vez
+
+            const baseUrls = getMyZapApiBaseUrls();
+            let lastError = null;
+            for (const api of baseUrls) {
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(), 20000);
+                try {
+                    const res = await fetch(`${api}sendText`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            apitoken: apiToken,
+                            sessionkey: sessionKey
+                        },
+                        body: JSON.stringify({ session: sessionKey, number: numero, text: texto }),
+                        signal: ctrl.signal
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    clearTimeout(timer);
+                    if (!res.ok || data?.error) {
+                        return { status: 'error', message: data?.error || `Falha no envio (HTTP ${res.status}).` };
+                    }
+                    info('IPC myzap:sendTestMessage enviado', { metadata: { area: 'ipcMyzap', numero } });
+                    return { status: 'success', message: `Mensagem de teste enviada para ${numero}.` };
+                } catch (e) {
+                    clearTimeout(timer);
+                    lastError = e;
+                }
+            }
+            return {
+                status: 'error',
+                message: `MyZap indisponivel para enviar: ${(lastError && lastError.message) || 'sem resposta'}`
+            };
+        } catch (error) {
+            warn('Falha no envio de teste via IPC', { metadata: { error } });
+            return { status: 'error', message: error.message || String(error) };
         }
     });
 

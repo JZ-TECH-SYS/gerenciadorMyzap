@@ -750,6 +750,21 @@ if (!hasSingleInstanceLock) {
   });
 
   ipcMain.handle('settings:get', (_e, key) => store.get(key));
+  // Busca manual de atualizacao (botao no painel). Reusa o fluxo do auto-updater;
+  // os toasts de "disponivel/sem novidade/erro" vem de attachAutoUpdaterHandlers.
+  ipcMain.handle('myzap:checkForUpdates', async () => {
+    try {
+      checkForUpdates(autoUpdater, { toast, warn });
+      return {
+        status: 'success',
+        message: app.isPackaged
+          ? 'Buscando atualizacao... se houver, o app avisa e instala ao reiniciar.'
+          : 'Atualizacao automatica so funciona na versao instalada (.exe).'
+      };
+    } catch (e) {
+      return { status: 'error', message: e?.message || String(e) };
+    }
+  });
   ipcMain.handle('myzap:getCapabilitySnapshot', () => getCapabilitySnapshotPayload(store));
   ipcMain.handle('myzap:saveCapabilityPreferences', async (_e, preferences = {}) => {
     const result = saveCapabilityPreferences(preferences, store);

@@ -379,6 +379,36 @@
 
                         </form>
 
+                        <hr class="my-4" />
+
+                        <div class="mb-2">
+                            <h6 class="fw-semibold mb-1">🛠 Diagnóstico e manutenção</h6>
+                            <p class="text-muted small mb-3">Ferramentas para testar o envio, atualizar o app e resolver problemas locais.</p>
+                        </div>
+
+                        <div id="diag-feedback" class="d-none alert mb-3"></div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Testar envio (número com DDD e país)</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="input-test-number" placeholder="Ex: 5511999999999" />
+                                <button type="button" id="btn-test-send" class="btn btn-outline-primary" onclick="enviarMensagemTeste()">
+                                    ✉ Enviar teste
+                                </button>
+                            </div>
+                            <div class="form-text">Manda uma mensagem de teste pro número informado. Use o seu próprio número pra validar sem incomodar clientes.</div>
+                        </div>
+
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button type="button" id="btn-check-updates" class="btn btn-outline-info" onclick="buscarAtualizacao()">
+                                ⬇ Buscar atualização
+                            </button>
+                            <button type="button" id="btn-reset-geral" class="btn btn-outline-danger" onclick="removerTudoMyZap()">
+                                ♻ Reset geral (remove e reinstala)
+                            </button>
+                        </div>
+                        <div class="form-text mt-2">O <strong>Reset geral</strong> remove a instalação local do MyZap e permite reinstalar do zero — use quando travar/parar de conectar.</div>
+
                     </div>
 
                 </div>
