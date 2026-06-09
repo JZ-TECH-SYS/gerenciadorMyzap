@@ -24,15 +24,27 @@
 
   ${If} $0 != ""
     DetailPrint "Removendo instalacao antiga (todos os usuarios)..."
-    ; O uninstaller per-machine pede elevacao (UAC) uma unica vez, nesta
-    ; migracao. /S = silencioso; _?= faz o ExecWait esperar de verdade.
+    ; O uninstaller per-machine EXIGE elevacao. ExecWait nao dispara UAC
+    ; (falha silenciosa com ERROR_ELEVATION_REQUIRED/740) — por isso usamos
+    ; ExecShellWait com o verbo "runas", que mostra o UAC uma unica vez.
+    ; Se o usuario negar o UAC, seguimos mesmo assim: o app antigo passa a
+    ; redirecionar sozinho para a instalacao nova (redirectToPerUserIfInstalled).
     ${If} $1 != ""
-      ExecWait '$0 /S _?=$1'
+      ExecShellWait "runas" "$1\${UNINSTALL_FILENAME}" "/S _?=$1"
       ; com _?= o uninstaller nao consegue se auto-remover: limpa o resto
-      Delete "$1\Uninstall ${PRODUCT_FILENAME}.exe"
+      Delete "$1\${UNINSTALL_FILENAME}"
       RMDir "$1"
     ${Else}
-      ExecWait '$0 /S'
+      ; sem InstallLocation: remove aspas do UninstallString e executa
+      StrCpy $2 $0
+      StrCpy $3 $2 1
+      ${If} $3 == '"'
+        StrCpy $2 $2 "" 1
+        StrLen $4 $2
+        IntOp $4 $4 - 1
+        StrCpy $2 $2 $4
+      ${EndIf}
+      ExecShellWait "runas" "$2" "/S"
     ${EndIf}
   ${EndIf}
 !macroend

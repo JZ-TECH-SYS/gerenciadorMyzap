@@ -63,7 +63,7 @@ const {
 } = require('./core/myzap/supervisor');
 const { checkAndUpdateIfNeeded } = require('./core/myzap/updateChecker');
 const { runPostUpdateRepairIfNeeded } = require('./core/myzap/firstRunRepair');
-const { offerPerUserMigration } = require('./core/migracaoInstalador');
+const { offerPerUserMigration, redirectToPerUserIfInstalled } = require('./core/migracaoInstalador');
 const deleteSession = require('./core/myzap/api/deleteSession');
 const { info: myzapInfo, warn: myzapWarn, error: myzapError } = require('./core/myzap/myzapLogger');
 
@@ -684,6 +684,14 @@ if (!hasSingleInstanceLock) {
   setQueueNotifier((msg) => trayManager.notify(msg));
 
   app.whenReady().then(() => {
+    // Casca antiga (Program Files) com a versao por usuario ja instalada:
+    // abre o app novo e fecha este, sem dialogo — nada de loop de ofertas.
+    // Roda ANTES de tudo (inclusive do auto-launch, para nao regravar o
+    // registro apontando para a instalacao antiga).
+    if (redirectToPerUserIfInstalled({ app })) {
+      return;
+    }
+
     configureAutoLaunch();
 
     info('Aplicacao pronta para uso', {
