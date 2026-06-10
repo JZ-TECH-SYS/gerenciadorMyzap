@@ -496,35 +496,43 @@ async function updateMyZapNow() {
   }
 }
 
-async function runMyZapCodeUpdateCheck(trigger) {
+// IMPORTANTE: o update AUTOMATICO de codigo do MyZap foi DESLIGADO.
+// Atualizar o codigo troca arquivos e roda pnpm install; qualquer
+// interrupcao (rede, antivirus, app fechado) pode deixar a instalacao
+// incompleta. Disparar isso sozinho a cada 6h quebrava clientes saudaveis
+// so porque um commit novo mudou o SHA. Agora o update de codigo so acontece
+// pelo botao "Atualizar MyZap agora" (usuario presente). No boot apenas
+// ADOTAMOS o SHA atual como baseline, SEM nunca trocar codigo.
+async function adoptMyZapBaselineSha() {
   if (!hasValidConfigMyZap() || !isMyZapModoLocal()) return;
   if (store.get('myzap_userRemovedLocal') === true) return;
 
   try {
-    const result = await checkAndUpdateIfNeeded();
-    if (result?.status === 'success' && !result.upToDate) {
-      toast('MyZap atualizado automaticamente para a versao mais recente.');
-      myzapInfo('MyZap: codigo atualizado automaticamente', {
-        metadata: { trigger, sha: result.sha || null }
+    const { getInstalledSha, setInstalledSha, fetchRemoteMainSha } = require('./core/myzap/updateChecker');
+    if (getInstalledSha()) return; // ja tem baseline
+
+    const sha = await fetchRemoteMainSha();
+    if (sha) {
+      setInstalledSha(sha);
+      myzapInfo('MyZap: SHA atual adotado como baseline (sem atualizar codigo)', {
+        metadata: { sha }
       });
     }
   } catch (err) {
-    myzapWarn('MyZap: falha no check periodico de atualizacao de codigo', {
-      metadata: { trigger, error: err?.message || String(err) }
+    myzapWarn('MyZap: falha ao adotar baseline de versao', {
+      metadata: { error: err?.message || String(err) }
     });
   }
 }
 
 function scheduleMyZapCodeUpdateCheck() {
   if (myzapCodeUpdateTimer) return;
+  myzapCodeUpdateTimer = true; // marca como agendado (sem timer real)
 
+  // Apenas registra a baseline; NAO ha update automatico periodico.
   setTimeout(() => {
-    runMyZapCodeUpdateCheck('startup_delay');
+    adoptMyZapBaselineSha();
   }, MYZAP_CODE_UPDATE_FIRST_DELAY_MS);
-
-  myzapCodeUpdateTimer = setInterval(() => {
-    runMyZapCodeUpdateCheck('interval');
-  }, MYZAP_CODE_UPDATE_INTERVAL_MS);
 }
 
 async function autoStartMyZap() {
@@ -787,10 +795,7 @@ if (!hasSingleInstanceLock) {
       myzapConfigRefreshTimer = null;
     }
 
-    if (myzapCodeUpdateTimer) {
-      clearInterval(myzapCodeUpdateTimer);
-      myzapCodeUpdateTimer = null;
-    }
+    myzapCodeUpdateTimer = null;
 
     clearQueueAutoStartTimer();
     stopSupervisor();

@@ -60,14 +60,6 @@ function rmrfSafe(targetPath) {
     }
 }
 
-function listCodeEntries(dirPath) {
-    try {
-        return fs.readdirSync(dirPath).filter((name) => !KEEP_IN_PLACE.has(name));
-    } catch (_e) {
-        return [];
-    }
-}
-
 async function rodarPnpmInstall(dirPath, reportProgress, label) {
     const pnpmRunner = await getPnpmCommand();
     if (!pnpmRunner) {
@@ -134,6 +126,7 @@ async function updateMyZapFromArchive(sha, options = {}) {
     const resolution = resolveMyZapDirectory();
     const dir = resolution.dir;
     const staging = `${dir}.staging`;
+    // limpa eventual sobra de versao antiga do updater (nao usamos mais backup)
     const codeBackup = `${dir}.code-backup`;
 
     // Sem instalacao previa valida => instalacao limpa pelo fluxo normal.
@@ -159,8 +152,6 @@ async function updateMyZapFromArchive(sha, options = {}) {
     rmrfSafe(codeBackup);
 
     let filaEstavaAtiva = false;
-    let codigoTrocado = false;
-    const movedToBackup = [];
 
     try {
         transition('recovering', { message: 'Baixando nova versao do MyZap...', sha });
@@ -170,16 +161,18 @@ async function updateMyZapFromArchive(sha, options = {}) {
             sha
         });
 
-        // 1) download + extract no staging — servico CONTINUA no ar
+        // 1) PREPARAR a versao nova COMPLETA no staging, com o servico AINDA no
+        // ar. Baixa + valida + instala deps. Se qualquer coisa falhar aqui, a
+        // instalacao atual NAO foi tocada — abortamos sem dano.
         await downloadRepositoryArchive(staging, { onProgress: reportProgress, sha });
         if (!fs.existsSync(path.join(staging, 'index.js'))
             || !fs.existsSync(path.join(staging, 'package.json'))) {
             throw new Error('Pacote baixado esta incompleto (sem index.js/package.json).');
         }
 
-        // 2) parar tudo ANTES de tocar em qualquer arquivo da instalacao
+        // 2) parar o servico e liberar a porta (so agora; o staging ja esta pronto)
         reportProgress('Parando servico para aplicar a nova versao...', 'update_stop_service', {
-            percent: 50,
+            percent: 55,
             dir
         });
         filaEstavaAtiva = pararFilaSeAtiva();
@@ -188,32 +181,30 @@ async function updateMyZapFromArchive(sha, options = {}) {
             throw new Error('Porta 5555 nao liberou para aplicar a atualizacao.');
         }
 
-        // 3) backup leve do CODIGO atual (dados e node_modules ficam no lugar)
-        fs.mkdirSync(codeBackup, { recursive: true });
-        for (const entry of listCodeEntries(dir)) {
-            fs.renameSync(path.join(dir, entry), path.join(codeBackup, entry));
-            movedToBackup.push(entry);
-        }
-        codigoTrocado = true;
-
-        // 4) copia o codigo novo para DENTRO do diretorio (caminho preservado)
-        reportProgress('Aplicando nova versao...', 'update_swap', { percent: 55, dir });
+        // 3) SOBRESCREVER o codigo por cima (nunca removemos nada antes de ter
+        // o novo: index.js sempre existe — fim do "instalacao incompleta" se
+        // algo interromper aqui). node_modules e dados ficam intactos.
+        reportProgress('Aplicando nova versao...', 'update_swap', { percent: 65, dir });
         for (const entry of fs.readdirSync(staging)) {
-            if (entry === 'node_modules') continue;
+            if (entry === 'node_modules' || KEEP_IN_PLACE.has(entry)) continue;
             fs.cpSync(path.join(staging, entry), path.join(dir, entry), {
                 recursive: true,
                 force: true
             });
         }
 
-        // 5) dependencias IN-PLACE: pnpm ajusta o node_modules existente no
-        // proprio caminho final — links/junctions continuam validos.
-        await rodarPnpmInstall(dir, reportProgress, 'Atualizando dependencias do MyZap...');
+        // 4) dependencias IN-PLACE no caminho FINAL (junctions do pnpm nascem
+        // certos). So roda se o lockfile mudou — senao reaproveita.
+        const lockMudou = hashFileSafe(path.join(dir, 'pnpm-lock.yaml'))
+            !== hashFileSafe(path.join(staging, 'pnpm-lock.yaml'));
+        if (lockMudou || !isMyZapInstallComplete(dir)) {
+            await rodarPnpmInstall(dir, reportProgress, 'Atualizando dependencias do MyZap...');
+        }
         if (!isMyZapInstallComplete(dir)) {
             throw new Error('Dependencias nao ficaram completas apos o install.');
         }
 
-        // 6) garante .env/banco e sobe
+        // 5) garante .env/banco e sobe
         syncMyZapConfigs(dir, {
             envContent: String(store.get('myzap_envContent') || ''),
             overwriteDb: false
@@ -231,7 +222,6 @@ async function updateMyZapFromArchive(sha, options = {}) {
         if (sha) {
             setInstalledSha(sha);
         }
-        rmrfSafe(codeBackup);
         rmrfSafe(staging);
         religarFila(filaEstavaAtiva);
 
@@ -246,47 +236,24 @@ async function updateMyZapFromArchive(sha, options = {}) {
             sha: sha || null
         };
     } catch (err) {
-        logError('updateMyZap: falha na atualizacao, executando rollback', {
-            metadata: { area: 'updateMyZap', dir, sha, codigoTrocado, error: getErrorMessage(err) }
+        logError('updateMyZap: falha na atualizacao', {
+            metadata: { area: 'updateMyZap', dir, sha, error: getErrorMessage(err) }
         });
 
-        // ROLLBACK: devolve o codigo antigo por cima; dados/node_modules nunca
-        // sairam do lugar, entao a instalacao volta exatamente ao que era.
+        // O codigo (novo ou antigo) continua INTEIRO no dir — nunca removemos
+        // nada. Se nao subir, o supervisor reinstala preservando os dados.
+        // Tentamos subir de novo aqui como melhor esforco antes de devolver.
         try {
-            if (codigoTrocado) {
-                await stopMyZapAndFreePort({ timeoutMs: 10000 });
-                for (const entry of movedToBackup) {
-                    const original = path.join(codeBackup, entry);
-                    const destino = path.join(dir, entry);
-                    if (!fs.existsSync(original)) continue;
-                    rmrfSafe(destino);
-                    fs.renameSync(original, destino);
-                }
-                // lockfile antigo de volta: install rapido garante consistencia
-                try {
-                    await rodarPnpmInstall(dir, reportProgress, 'Restaurando dependencias da versao anterior...');
-                } catch (_e) { /* melhor esforco — node_modules antigo segue no lugar */ }
-
-                const rollbackStart = await iniciarMyZap(dir, {});
-                warn('updateMyZap: rollback aplicado, versao anterior restaurada', {
-                    metadata: {
-                        area: 'updateMyZap',
-                        rollbackStart: rollbackStart?.status || 'error'
-                    }
-                });
-            }
-        } catch (rollbackErr) {
-            logError('updateMyZap: rollback tambem falhou', {
-                metadata: { area: 'updateMyZap', error: getErrorMessage(rollbackErr) }
-            });
-        } finally {
             rmrfSafe(staging);
             religarFila(filaEstavaAtiva);
-        }
+            if (isMyZapInstallComplete(dir)) {
+                await iniciarMyZap(dir, {});
+            }
+        } catch (_e) { /* supervisor cuida */ }
 
         return {
             status: 'error',
-            message: `Falha ao atualizar MyZap: ${getErrorMessage(err)}. A versao anterior foi mantida.`
+            message: `Falha ao atualizar MyZap: ${getErrorMessage(err)}. A instalacao foi mantida.`
         };
     }
 }
