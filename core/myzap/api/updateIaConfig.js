@@ -83,18 +83,18 @@ async function updateIaConfig(rawInput) {
         myzap_mensagemPadrao: mensagemPadrao
     });
 
+    // A capability do BACKEND controla apenas prompt/ia remotos. A mensagem
+    // padrao e recurso do MyZap LOCAL — o gate de capability fazia o "salvar
+    // vazia" do painel NUNCA chegar ao MyZap (a auto-resposta nao desligava).
+    // Agora tentamos sempre que ha MyZap local; um 404 (MyZap antigo sem a
+    // rota) vira 'skipped' gracioso la embaixo.
     if (!iaCapability?.enabled) {
-        info('Configuracao opcional de IA ignorada por nao suportada ou desabilitada', {
+        info('Capability de IA desabilitada no backend; aplicando apenas a mensagem padrao no MyZap local', {
             metadata: {
                 area: 'updateIaConfig',
                 capability: iaCapability || null
             }
         });
-        return {
-            status: 'skipped',
-            reason: iaCapability?.reason || 'capability_disabled',
-            message: 'Configuracao de IA ignorada: recurso nao suportado ou desabilitado.'
-        };
     }
 
     if (!token) {
