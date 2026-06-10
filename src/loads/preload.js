@@ -35,5 +35,7 @@ contextBridge.exposeInMainWorld('api', {
   repairService: () => ipcRenderer.invoke('myzap:repairService'),
   clearUserRemovedFlag: () => ipcRenderer.invoke('myzap:clearUserRemovedFlag'),
   checkForUpdates: () => ipcRenderer.invoke('myzap:checkForUpdates'),
-  sendTestMessage: (number, text) => ipcRenderer.invoke('myzap:sendTestMessage', number, text)
+  sendTestMessage: (number, text) => ipcRenderer.invoke('myzap:sendTestMessage', number, text),
+  testConnection: () => ipcRenderer.invoke('myzap:testConnection'),
+  sendSelfTest: () => ipcRenderer.invoke('myzap:sendSelfTest')
 });

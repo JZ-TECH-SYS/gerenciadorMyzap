@@ -147,15 +147,27 @@
                                     <div class="d-flex justify-content-between align-items-center mb-2">
                                         <strong>Situação</strong>
 
-                                        <button class="btn btn-sm btn-outline-secondary" title="Atualizar status"
-                                            onclick="checkConnection()">
-                                            🔄
-                                        </button>
+                                        <div class="d-flex gap-1">
+                                            <button id="btn-test-connection" class="btn btn-sm btn-outline-info" title="Testa o serviço e a sessão, com diagnóstico em texto claro"
+                                                onclick="testarConexaoAgora()">
+                                                🔍 Testar conexão
+                                            </button>
+                                            <button id="btn-self-test" class="btn btn-sm btn-outline-success" title="Envia uma mensagem de teste para o número conectado nesta sessão"
+                                                onclick="enviarTesteParaMim()">
+                                                ✉ Testar p/ meu número
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-secondary" title="Atualizar status"
+                                                onclick="checkConnection()">
+                                                🔄
+                                            </button>
+                                        </div>
                                     </div>
 
                                     <div class="status-indicator waiting">
                                         Verificando...
                                     </div>
+
+                                    <div id="connection-test-result" class="d-none alert mb-0 mt-2 text-small"></div>
                                 </div>
 
                                 <!-- QR CODE -->

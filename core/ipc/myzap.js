@@ -11,6 +11,7 @@ const deleteSession = require('../myzap/api/deleteSession');
 const verifyRealStatus = require('../myzap/api/verifyRealStatus');
 const { getSessionSnapshot } = require('../myzap/api/getSessionSnapshot');
 const { connectWithRecovery } = require('../myzap/api/connectSession');
+const { parseSessionPayload } = require('../myzap/api/sessionSnapshotParser');
 const updateIaConfig = require('../myzap/api/updateIaConfig');
 const { getMyZapApiBaseUrls } = require('../myzap/api/requestMyZapApi');
 const { iniciarMyZap } = require('../myzap/iniciarMyZap');
@@ -25,7 +26,7 @@ const {
     buildEnvContent: buildTemplateEnvContent
 } = require('../myzap/envTemplate');
 const { getStateSnapshot } = require('../myzap/stateMachine');
-const { getPrivilegeStatus } = require('../myzap/processUtils');
+const { getPrivilegeStatus, isLocalHttpServiceReachable } = require('../myzap/processUtils');
 const {
     getUltimosPendentesMyZap,
     startWhatsappQueueWatcher,
@@ -39,6 +40,32 @@ const envStore = new Store();
 function isSetupInProgress() {
     const progress = envStore.get('myzap_progress');
     return progress && progress.active === true;
+}
+
+/**
+ * Varre o payload da sessao procurando o numero do PROPRIO WhatsApp conectado
+ * (campo number/phone do device). Usado pelo self-test de 1 clique.
+ */
+function extrairNumeroProprio(payload, depth = 0) {
+    if (!payload || typeof payload !== 'object' || depth > 6) return '';
+
+    const candidatos = ['number', 'phone', 'phoneNumber', 'wid'];
+    for (const key of candidatos) {
+        const valor = payload[key];
+        if (valor === undefined || valor === null) continue;
+        const digits = String(typeof valor === 'object' ? (valor.user || '') : valor).replace(/\D/g, '');
+        if (digits.length >= 10 && digits.length <= 15) {
+            return digits;
+        }
+    }
+
+    for (const valor of Object.values(payload)) {
+        if (valor && typeof valor === 'object') {
+            const achado = extrairNumeroProprio(valor, depth + 1);
+            if (achado) return achado;
+        }
+    }
+    return '';
 }
 
 function parseEnvSecrets(envContent) {
@@ -449,57 +476,137 @@ function registerMyZapHandlers(ipcMain) {
 
     // Envia uma mensagem de TESTE pro numero informado (use o proprio numero para
     // validar o envio sem incomodar clientes). POST direto no /sendText do MyZap local.
+    async function enviarMensagemDeTeste(numeroRaw, textoRaw) {
+        const sessionKey = String(envStore.get('myzap_sessionKey') || '').trim();
+        const apiToken = String(envStore.get('myzap_apiToken') || '').trim();
+        const numero = String(numeroRaw || '').replace(/\D/g, '');
+        const texto = String(textoRaw || '').trim()
+            || 'Teste de envio do Gerenciador MyZap. Se voce recebeu, o envio esta funcionando.';
+
+        if (!sessionKey || !apiToken) {
+            return { status: 'error', message: 'Sessao/token do MyZap nao configurados. Conecte o MyZap primeiro.' };
+        }
+        if (numero.length < 8) {
+            return { status: 'error', message: 'Informe um numero valido com DDD e pais. Ex: 5511999999999' };
+        }
+
+        envStore.set('myzap_testNumber', numero); // prefill na proxima vez
+
+        const baseUrls = getMyZapApiBaseUrls();
+        let lastError = null;
+        for (const api of baseUrls) {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 20000);
+            try {
+                const res = await fetch(`${api}sendText`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        apitoken: apiToken,
+                        sessionkey: sessionKey
+                    },
+                    body: JSON.stringify({ session: sessionKey, number: numero, text: texto }),
+                    signal: ctrl.signal
+                });
+                const data = await res.json().catch(() => ({}));
+                clearTimeout(timer);
+                if (!res.ok || data?.error) {
+                    return { status: 'error', message: data?.error || `Falha no envio (HTTP ${res.status}).` };
+                }
+                info('IPC envio de teste concluido', { metadata: { area: 'ipcMyzap', numero } });
+                return { status: 'success', message: `Mensagem de teste enviada para ${numero}.` };
+            } catch (e) {
+                clearTimeout(timer);
+                lastError = e;
+            }
+        }
+        return {
+            status: 'error',
+            message: `MyZap indisponivel para enviar: ${(lastError && lastError.message) || 'sem resposta'}`
+        };
+    }
+
     ipcMain.handle('myzap:sendTestMessage', async (_event, numeroRaw, textoRaw) => {
         try {
-            const sessionKey = String(envStore.get('myzap_sessionKey') || '').trim();
-            const apiToken = String(envStore.get('myzap_apiToken') || '').trim();
-            const numero = String(numeroRaw || '').replace(/\D/g, '');
-            const texto = String(textoRaw || '').trim()
-                || 'Teste de envio do Gerenciador MyZap. Se voce recebeu, o envio esta funcionando.';
-
-            if (!sessionKey || !apiToken) {
-                return { status: 'error', message: 'Sessao/token do MyZap nao configurados. Conecte o MyZap primeiro.' };
-            }
-            if (numero.length < 8) {
-                return { status: 'error', message: 'Informe um numero valido com DDD e pais. Ex: 5511999999999' };
-            }
-
-            envStore.set('myzap_testNumber', numero); // prefill na proxima vez
-
-            const baseUrls = getMyZapApiBaseUrls();
-            let lastError = null;
-            for (const api of baseUrls) {
-                const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(), 20000);
-                try {
-                    const res = await fetch(`${api}sendText`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            apitoken: apiToken,
-                            sessionkey: sessionKey
-                        },
-                        body: JSON.stringify({ session: sessionKey, number: numero, text: texto }),
-                        signal: ctrl.signal
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    clearTimeout(timer);
-                    if (!res.ok || data?.error) {
-                        return { status: 'error', message: data?.error || `Falha no envio (HTTP ${res.status}).` };
-                    }
-                    info('IPC myzap:sendTestMessage enviado', { metadata: { area: 'ipcMyzap', numero } });
-                    return { status: 'success', message: `Mensagem de teste enviada para ${numero}.` };
-                } catch (e) {
-                    clearTimeout(timer);
-                    lastError = e;
-                }
-            }
-            return {
-                status: 'error',
-                message: `MyZap indisponivel para enviar: ${(lastError && lastError.message) || 'sem resposta'}`
-            };
+            return await enviarMensagemDeTeste(numeroRaw, textoRaw);
         } catch (error) {
             warn('Falha no envio de teste via IPC', { metadata: { error } });
+            return { status: 'error', message: error.message || String(error) };
+        }
+    });
+
+    // Diagnostico de 1 clique do painel: servico no ar? sessao em que estado?
+    // Devolve mensagens em linguagem humana (sem "erro de conexao" generico).
+    ipcMain.handle('myzap:testConnection', async () => {
+        const resultado = {
+            servico: 'fora',
+            sessao: 'desconhecida',
+            sessionKey: String(envStore.get('myzap_sessionKey') || '').trim(),
+            detalhe: ''
+        };
+
+        try {
+            const vivo = await isLocalHttpServiceReachable({ timeoutMs: 4000 });
+            if (!vivo) {
+                resultado.detalhe = 'O servico local nao respondeu na porta 5555. Use "Reparar MyZap agora" (bandeja ou aba Configuracoes).';
+                return resultado;
+            }
+            resultado.servico = 'no_ar';
+
+            const verify = await verifyRealStatus();
+            const parsed = parseSessionPayload(verify);
+
+            if (parsed.isConnected) {
+                resultado.sessao = 'conectada';
+                resultado.detalhe = 'WhatsApp conectado e pronto para enviar.';
+            } else if (parsed.isQrWaiting) {
+                resultado.sessao = 'aguardando_qr';
+                resultado.detalhe = 'Sessao criada aguardando leitura do QR Code (aba MyZap).';
+            } else if (parsed.isNotFound) {
+                resultado.sessao = 'nao_criada';
+                resultado.detalhe = `A sessao "${resultado.sessionKey}" ainda nao existe no MyZap. Clique em "Iniciar instancia" para criar e gerar o QR.`;
+            } else if (!parsed.hasData) {
+                resultado.sessao = 'sem_resposta';
+                resultado.detalhe = 'O servico respondeu, mas a consulta da sessao falhou. Tente novamente em instantes.';
+            } else {
+                resultado.sessao = 'desconectada';
+                resultado.detalhe = parsed.message || 'Sessao existe mas esta desconectada. Clique em "Iniciar instancia" para reconectar.';
+            }
+
+            return resultado;
+        } catch (error) {
+            warn('Falha no teste de conexao via IPC', { metadata: { error } });
+            resultado.detalhe = `Erro inesperado no teste: ${error.message || String(error)}`;
+            return resultado;
+        }
+    });
+
+    // Envia teste para o PROPRIO numero da sessao conectada (1 clique, sem digitar nada).
+    ipcMain.handle('myzap:sendSelfTest', async () => {
+        try {
+            const verify = await verifyRealStatus();
+            const parsed = parseSessionPayload(verify);
+            if (!parsed.isConnected) {
+                return {
+                    status: 'error',
+                    message: 'O WhatsApp ainda nao esta conectado. Conecte primeiro (QR Code) e tente de novo.'
+                };
+            }
+
+            const numero = extrairNumeroProprio(verify);
+            if (!numero) {
+                return {
+                    status: 'error',
+                    message: 'Nao consegui descobrir o numero da sessao. Use o teste manual na aba Configuracoes informando seu numero.'
+                };
+            }
+
+            return await enviarMensagemDeTeste(
+                numero,
+                'Teste do Gerenciador MyZap: conexao e envio funcionando.'
+            );
+        } catch (error) {
+            warn('Falha no self-test via IPC', { metadata: { error } });
             return { status: 'error', message: error.message || String(error) };
         }
     });

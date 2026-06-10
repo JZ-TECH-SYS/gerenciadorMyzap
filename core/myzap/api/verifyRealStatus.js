@@ -47,17 +47,29 @@ async function verifyRealStatus() {
                 signal: ctrl.signal
             });
 
-            // Nao tratar 401/403/500 com corpo JSON como sucesso
             if (!res.ok) {
                 if (res.status === 401 || res.status === 403) {
                     error("Credencial recusada ao verificar status real MyZap (verifyRealStatus)", {
                         metadata: { area: 'verifyRealStatus', api, httpStatus: res.status }
                     });
-                } else {
-                    warn("Resposta HTTP de erro ao verificar status real MyZap", {
-                        metadata: { area: 'verifyRealStatus', api, httpStatus: res.status }
-                    });
+                    return null;
                 }
+
+                // O MyZap moderno responde erros com JSON util — ex.: HTTP 404
+                // {"status":"NOT FOUND","messages":"A session (x) informada nao
+                // existe."} quando a sessao ainda nao foi criada. Isso e
+                // INFORMACAO (painel mostra "Sessao nao iniciada"), nao erro.
+                const body = await res.json().catch(() => null);
+                if (body && typeof body === 'object') {
+                    debug("Status HTTP de erro com corpo util no verifyRealStatus", {
+                        metadata: { area: 'verifyRealStatus', api, httpStatus: res.status, body }
+                    });
+                    return body;
+                }
+
+                warn("Resposta HTTP de erro ao verificar status real MyZap", {
+                    metadata: { area: 'verifyRealStatus', api, httpStatus: res.status }
+                });
                 return null;
             }
 

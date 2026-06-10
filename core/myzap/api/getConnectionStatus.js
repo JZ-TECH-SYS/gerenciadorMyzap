@@ -47,17 +47,28 @@ async function getConnectionStatus() {
                 signal: ctrl.signal
             });
 
-            // Nao tratar 401/403/500 com corpo JSON como sucesso (preserva shape: [])
             if (!res.ok) {
                 if (res.status === 401 || res.status === 403) {
                     error("Credencial recusada ao consultar status de conexão MyZap (getConnectionStatus)", {
                         metadata: { area: 'getConnectionStatus', api, httpStatus: res.status }
                     });
-                } else {
-                    warn("Resposta HTTP de erro ao consultar status de conexão MyZap", {
-                        metadata: { area: 'getConnectionStatus', api, httpStatus: res.status }
-                    });
+                    return [];
                 }
+
+                // MyZap moderno responde erros com JSON util (ex.: HTTP 404 =
+                // sessao ainda nao criada). Devolve o corpo para o painel
+                // mostrar "Sessao nao iniciada" em vez de erro generico.
+                const body = await res.json().catch(() => null);
+                if (body && typeof body === 'object') {
+                    debug("Status HTTP de erro com corpo util no getConnectionStatus", {
+                        metadata: { area: 'getConnectionStatus', api, httpStatus: res.status, body }
+                    });
+                    return body;
+                }
+
+                warn("Resposta HTTP de erro ao consultar status de conexão MyZap", {
+                    metadata: { area: 'getConnectionStatus', api, httpStatus: res.status }
+                });
                 return [];
             }
 

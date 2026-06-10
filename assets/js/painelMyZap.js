@@ -2186,6 +2186,72 @@ function setDiagFeedback(type, message) {
   el.classList.remove('d-none');
 }
 
+function setConnectionTestResult(type, message) {
+  const el = document.getElementById('connection-test-result');
+  if (!el) return;
+  const map = { info: 'alert-info', success: 'alert-success', warning: 'alert-warning', error: 'alert-danger' };
+  el.className = `alert ${map[type] || 'alert-secondary'} mb-0 mt-2 text-small`;
+  el.textContent = message;
+  el.classList.remove('d-none');
+}
+
+async function testarConexaoAgora() {
+  const btn = document.getElementById('btn-test-connection');
+  try {
+    if (btn) btn.disabled = true;
+    setConnectionTestResult('info', 'Testando servico e sessao...');
+
+    const r = await window.api.testConnection();
+    if (!r) {
+      setConnectionTestResult('error', 'Teste nao retornou resultado. Tente novamente.');
+      return;
+    }
+
+    const servicoTxt = r.servico === 'no_ar' ? 'Servico MyZap: NO AR ✓' : 'Servico MyZap: FORA DO AR ✗';
+    const mapaSessao = {
+      conectada: `Sessao "${r.sessionKey}": CONECTADA ✓`,
+      aguardando_qr: `Sessao "${r.sessionKey}": aguardando QR Code`,
+      nao_criada: `Sessao "${r.sessionKey}": ainda nao criada`,
+      desconectada: `Sessao "${r.sessionKey}": desconectada`,
+      sem_resposta: `Sessao "${r.sessionKey}": sem resposta`,
+      desconhecida: ''
+    };
+    const sessaoTxt = mapaSessao[r.sessao] || '';
+    const texto = [servicoTxt, sessaoTxt, r.detalhe].filter(Boolean).join(' | ');
+
+    if (r.servico !== 'no_ar') {
+      setConnectionTestResult('error', texto);
+    } else if (r.sessao === 'conectada') {
+      setConnectionTestResult('success', texto);
+    } else {
+      setConnectionTestResult('warning', texto);
+    }
+  } catch (e) {
+    setConnectionTestResult('error', 'Erro no teste: ' + (e?.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function enviarTesteParaMim() {
+  const btn = document.getElementById('btn-self-test');
+  try {
+    if (btn) btn.disabled = true;
+    setConnectionTestResult('info', 'Enviando mensagem de teste para o seu proprio numero...');
+
+    const r = await window.api.sendSelfTest();
+    if (r && r.status === 'success') {
+      setConnectionTestResult('success', (r.message || 'Mensagem enviada!') + ' Confira o WhatsApp conectado.');
+    } else {
+      setConnectionTestResult('error', (r && r.message) || 'Falha ao enviar o teste.');
+    }
+  } catch (e) {
+    setConnectionTestResult('error', 'Erro no envio de teste: ' + (e?.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function repararServicoAgora() {
   const btn = document.getElementById('btn-repair-service');
   try {
