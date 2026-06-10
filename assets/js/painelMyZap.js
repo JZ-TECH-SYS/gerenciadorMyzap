@@ -877,6 +877,8 @@ async function loadConfigs() {
     }
 
     if (document.getElementById('myzap-mensagem-padrao')) document.getElementById('myzap-mensagem-padrao').value = myzap_mensagemPadrao;
+    // Campo fixo da aba Configuracoes (sempre acessivel, independe de conexao/IA)
+    if (document.getElementById('config-mensagem-padrao')) document.getElementById('config-mensagem-padrao').value = myzap_mensagemPadrao;
 
     // Carrega segredos do .env para a aba de configurações
     try {
@@ -1443,6 +1445,61 @@ async function deletarSessao() {
         Nao foi possivel encerrar a sessao
       </span>
     `;
+  }
+}
+
+function setMsgPadraoStatus(type, message) {
+  const el = document.getElementById('config-msg-padrao-status');
+  if (!el) return;
+  const map = { info: 'alert-info', success: 'alert-success', warning: 'alert-warning', error: 'alert-danger' };
+  el.className = `alert ${map[type] || 'alert-secondary'} mb-3`;
+  el.textContent = message;
+  el.classList.remove('d-none');
+}
+
+// Salvar da aba Configuracoes: SEMPRE acessivel (nao depende de conexao nem da
+// visibilidade do card de IA). Salva no app e tenta aplicar no MyZap; vazio
+// desliga a resposta automatica.
+async function salvarMensagemPadraoConfig() {
+  const textarea = document.getElementById('config-mensagem-padrao');
+  const btn = document.getElementById('btn-save-msg-padrao');
+  const mensagemPadrao = textarea?.value?.trim() || '';
+
+  if (!mensagemPadrao) {
+    const confirma = confirm('Salvar a mensagem padrao VAZIA desliga a resposta automatica do WhatsApp (nao responde nada para quem mandar mensagem). Continuar?');
+    if (!confirma) return;
+  }
+
+  if (btn) btn.disabled = true;
+  setMsgPadraoStatus('info', 'Salvando mensagem padrao...');
+
+  try {
+    const response = await window.api.updateIaConfig(mensagemPadrao);
+
+    // o app sempre persiste myzap_mensagemPadrao; espelha no campo da aba MyZap
+    const espelho = document.getElementById('myzap-mensagem-padrao');
+    if (espelho) espelho.value = mensagemPadrao;
+
+    if (response?.status === 'skipped') {
+      // backend nao expoe a feature agora — fica salvo e aplica no proximo sync
+      setMsgPadraoStatus('warning', mensagemPadrao
+        ? 'Mensagem salva. Sera aplicada no MyZap assim que o recurso ficar disponivel/sincronizar.'
+        : 'Mensagem padrao removida e salva. A auto-resposta sera desligada no proximo sync.');
+      return;
+    }
+
+    if (!response || response.status === 'error') {
+      throw new Error(response?.message || 'Falha ao salvar a mensagem padrao.');
+    }
+
+    setMsgPadraoStatus('success', mensagemPadrao
+      ? 'Mensagem padrao salva e aplicada no MyZap.'
+      : 'Mensagem padrao removida: o WhatsApp nao vai mais responder automaticamente.');
+  } catch (err) {
+    console.error('Erro ao salvar mensagem padrao (config):', err);
+    setMsgPadraoStatus('error', `Erro ao salvar: ${err?.message || err}`);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
