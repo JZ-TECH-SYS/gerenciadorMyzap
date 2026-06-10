@@ -131,6 +131,17 @@ function hasKeyword(value, keywords = []) {
     return keywords.some((keyword) => normalized.includes(String(keyword).toLowerCase()));
 }
 
+/**
+ * Match por PALAVRA INTEIRA (\b): evita o falso positivo classico em que o
+ * estado transitorio "OPENING" (carregando, SEM login) casava com a keyword
+ * "open" por substring e o painel mostrava "Conectado" sem QR lido.
+ */
+function hasWholeWord(value, words = []) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized) return false;
+    return words.some((word) => new RegExp(`\\b${word}\\b`, 'i').test(normalized));
+}
+
 function emptyParsed(rawPayload) {
     return {
         raw: rawPayload,
@@ -183,10 +194,12 @@ function parseSessionPayload(payload) {
     const qrCode = normalizeQr(qrRaw);
     const joint = [status, state, realStatus, message].join(' ').toLowerCase();
 
-    const isConnected = hasKeyword(joint, [
+    const isConnected = hasWholeWord(joint, [
         'connected',
         'open',
         'authenticated',
+        'islogged',
+        'inchat',
         'online',
         'ativo'
     ]);

@@ -49,7 +49,8 @@ function isSetupInProgress() {
 function extrairNumeroProprio(payload, depth = 0) {
     if (!payload || typeof payload !== 'object' || depth > 6) return '';
 
-    const candidatos = ['number', 'phone', 'phoneNumber', 'wid'];
+    // widUser = numero do proprio WhatsApp no diagnostics do verifyRealStatus
+    const candidatos = ['widUser', 'number', 'phone', 'phoneNumber', 'wid'];
     for (const key of candidatos) {
         const valor = payload[key];
         if (valor === undefined || valor === null) continue;

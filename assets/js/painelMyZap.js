@@ -1068,12 +1068,12 @@ async function checkConnection() {
 function isPayloadConnected(payload) {
   if (!payload || Array.isArray(payload)) return false;
   var fields = ['realStatus', 'status', 'dbStatus', 'state', 'dbState', 'connectionStatus'];
-  var connectedKeywords = ['connected', 'open', 'authenticated', 'islogged'];
+  // Palavra INTEIRA (\b): o estado transitorio "OPENING" (carregando, sem
+  // login) casava com "open" por substring e mostrava "Conectado" sem QR lido.
+  var connectedRegex = /\b(connected|open|authenticated|islogged|inchat)\b/i;
   for (var i = 0; i < fields.length; i++) {
-    var val = String(payload[fields[i]] || '').trim().toLowerCase();
-    for (var j = 0; j < connectedKeywords.length; j++) {
-      if (val.indexOf(connectedKeywords[j]) !== -1) return true;
-    }
+    var val = String(payload[fields[i]] || '').trim();
+    if (val && connectedRegex.test(val)) return true;
   }
   if (payload.result && typeof payload.result === 'object') {
     return isPayloadConnected(payload.result);
