@@ -37,5 +37,6 @@ contextBridge.exposeInMainWorld('api', {
   checkForUpdates: () => ipcRenderer.invoke('myzap:checkForUpdates'),
   sendTestMessage: (number, text) => ipcRenderer.invoke('myzap:sendTestMessage', number, text),
   testConnection: () => ipcRenderer.invoke('myzap:testConnection'),
-  sendSelfTest: () => ipcRenderer.invoke('myzap:sendSelfTest')
+  sendSelfTest: () => ipcRenderer.invoke('myzap:sendSelfTest'),
+  cancelarPendentesBackend: () => ipcRenderer.invoke('myzap:cancelarPendentesBackend')
 });

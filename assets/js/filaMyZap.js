@@ -245,6 +245,38 @@ async function forcarBuscaAgora() {
   }
 }
 
+// ── Cancelar pendentes em massa (backend) ────────────────
+
+async function cancelarPendentesEmMassa() {
+  const btn = document.getElementById('btn-cancelar-pendentes');
+  if (!btn) return;
+
+  const confirma = confirm(
+    'Cancelar TODAS as mensagens pendentes no backend?\n\n'
+    + 'Nenhuma delas sera enviada. As regras de cobranca voltam a agendar normalmente nos proximos ciclos.'
+  );
+  if (!confirma) return;
+
+  btn.disabled = true;
+  const txt = btn.textContent;
+  btn.textContent = 'Cancelando...';
+
+  try {
+    const result = await window.api.cancelarPendentesBackend();
+    if (result?.status !== 'success') {
+      throw new Error(result?.message || 'Falha ao cancelar pendentes');
+    }
+    showInlineError('');
+    alert(result?.message || 'Mensagens pendentes canceladas no backend.');
+    await refreshAll();
+  } catch (e) {
+    showInlineError(`Erro ao cancelar pendentes: ${e?.message || e}`);
+  } finally {
+    btn.textContent = txt;
+    btn.disabled = false;
+  }
+}
+
 // ── Log em tempo real ────────────────────────────────────
 
 function escapeHtml(str) {
@@ -367,6 +399,11 @@ function clearLogView() {
 
   if (btnForce) {
     btnForce.addEventListener('click', forcarBuscaAgora);
+  }
+
+  const btnCancelarPendentes = document.getElementById('btn-cancelar-pendentes');
+  if (btnCancelarPendentes) {
+    btnCancelarPendentes.addEventListener('click', cancelarPendentesEmMassa);
   }
 
   if (btnClearLog) {

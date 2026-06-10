@@ -1461,9 +1461,11 @@ async function salvarMensagemPadrao() {
   const btnSave = document.getElementById('btn-save-ia-config');
   const mensagemPadrao = textarea?.value?.trim() || '';
 
+  // Vazia e PERMITIDO: limpa a mensagem padrao no MyZap e ele para de
+  // responder automaticamente quem manda mensagem (sem "como posso ajudar").
   if (!mensagemPadrao) {
-    alert('Informe uma mensagem padrao antes de salvar.');
-    return;
+    const confirma = confirm('Salvar a mensagem padrao VAZIA desliga a resposta automatica do WhatsApp (o MyZap nao responde nada para quem mandar mensagem). Continuar?');
+    if (!confirma) return;
   }
 
   btnSave.disabled = true;
@@ -1484,7 +1486,9 @@ async function salvarMensagemPadrao() {
       return;
     }
 
-    alert('Mensagem padrao atualizada com sucesso.');
+    alert(mensagemPadrao
+      ? 'Mensagem padrao atualizada com sucesso.'
+      : 'Mensagem padrao removida: o WhatsApp nao vai mais responder automaticamente.');
   } catch (err) {
     console.error('Erro ao atualizar mensagem padrao:', err);
     alert(`Erro ao atualizar mensagem padrao: ${err?.message || err}`);

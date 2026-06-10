@@ -14,6 +14,7 @@ const { connectWithRecovery } = require('../myzap/api/connectSession');
 const { parseSessionPayload } = require('../myzap/api/sessionSnapshotParser');
 const updateIaConfig = require('../myzap/api/updateIaConfig');
 const { getMyZapApiBaseUrls } = require('../myzap/api/requestMyZapApi');
+const { getBackendApiConfig } = require('../myzap/capabilities');
 const { iniciarMyZap } = require('../myzap/iniciarMyZap');
 const {
     prepareAutoConfig,
@@ -532,6 +533,47 @@ function registerMyZapHandlers(ipcMain) {
             return await enviarMensagemDeTeste(numeroRaw, textoRaw);
         } catch (error) {
             warn('Falha no envio de teste via IPC', { metadata: { error } });
+            return { status: 'error', message: error.message || String(error) };
+        }
+    });
+
+    // Botao de emergencia da janela da Fila: cancela em massa TODAS as
+    // mensagens 'pendente' no backend (fila_myzap) — nada delas sera enviado.
+    ipcMain.handle('myzap:cancelarPendentesBackend', async () => {
+        try {
+            const { backendApiUrl, backendApiToken } = getBackendApiConfig(envStore);
+            const idempresa = parseInt(String(envStore.get('idempresa') || '').trim(), 10);
+
+            if (!backendApiUrl || !backendApiToken || !idempresa) {
+                return { status: 'error', message: 'Configuracao do backend incompleta (URL/token/empresa).' };
+            }
+
+            const base = backendApiUrl.endsWith('/') ? backendApiUrl : `${backendApiUrl}/`;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 15000);
+            try {
+                const res = await fetch(`${base}parametrizacao-myzap/fila/cancelar-pendentes`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${backendApiToken}`
+                    },
+                    body: JSON.stringify({ idempresa }),
+                    signal: ctrl.signal
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    return { status: 'error', message: data?.message || `Falha ao cancelar (HTTP ${res.status}).` };
+                }
+                info('IPC cancelarPendentesBackend executado', {
+                    metadata: { area: 'ipcMyzap', idempresa }
+                });
+                return { status: 'success', message: data?.message || 'Mensagens pendentes canceladas no backend.' };
+            } finally {
+                clearTimeout(timer);
+            }
+        } catch (error) {
+            warn('Falha ao cancelar pendentes no backend via IPC', { metadata: { error } });
             return { status: 'error', message: error.message || String(error) };
         }
     });
