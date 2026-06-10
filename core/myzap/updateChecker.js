@@ -12,6 +12,7 @@
 const Store = require('electron-store');
 const { info, warn } = require('./myzapLogger');
 const { withLifecycleLock } = require('./opLock');
+const { isLocalHttpServiceReachable } = require('./processUtils');
 
 const store = new Store();
 
@@ -90,6 +91,27 @@ async function checkAndUpdateIfNeeded(options = {}) {
             sha: installedSha,
             message: 'MyZap ja esta na versao mais recente.'
         };
+    }
+
+    // Instalacao SEM SHA registrado (veio de versao antiga do gerenciador) e
+    // FUNCIONANDO: adota o SHA remoto como baseline em vez de fazer cirurgia
+    // numa instalacao saudavel. O proximo ciclo compara de verdade — e o
+    // botao "Atualizar MyZap agora" (force) continua atualizando na hora.
+    if (!force && !installedSha) {
+        const saudavel = await isLocalHttpServiceReachable({ timeoutMs: 3000 });
+        if (saudavel) {
+            setInstalledSha(remoteSha);
+            info('updateChecker: instalacao saudavel sem SHA registrado — baseline adotada', {
+                metadata: { area: 'updateChecker', remoteSha }
+            });
+            return {
+                status: 'success',
+                upToDate: true,
+                baselineAdopted: true,
+                sha: remoteSha,
+                message: 'Versao local registrada como baseline (sem atualizacao).'
+            };
+        }
     }
 
     info('updateChecker: atualizacao do MyZap necessaria', {

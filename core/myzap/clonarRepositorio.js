@@ -39,8 +39,20 @@ function rodarComando(executor, args, opcoes = {}) {
         source: executor && executor.command ? executor.command : undefined,
         ...executor,
       };
-    const proc = spawn(runner.command, [...runner.prefixArgs, ...args], {
-      shell: runner.shell,
+
+    // No Windows, rodar via shell OCULTO (cmd + CREATE_NO_WINDOW): o console
+    // invisivel e HERDADO pelos subprocessos .cmd/.bat dos lifecycle scripts —
+    // sem isso, cada script que chamava o shim node.cmd abria uma janela de
+    // console na cara do cliente.
+    const isWin = process.platform === 'win32';
+    const quoteWin = (value) => (/\s/.test(String(value)) ? `"${value}"` : String(value));
+    const command = isWin ? quoteWin(runner.command) : runner.command;
+    const finalArgs = isWin
+      ? [...runner.prefixArgs, ...args].map(quoteWin)
+      : [...runner.prefixArgs, ...args];
+
+    const proc = spawn(command, finalArgs, {
+      shell: isWin ? true : runner.shell,
       // shim de `node` no PATH: scripts de lifecycle das deps que chamam `node`
       // funcionam mesmo sem Node instalado na maquina (usa o Electron como Node).
       env: envWithNodeShim(runner.env),
@@ -250,6 +262,22 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
 
     if (syncResult.status === 'error') {
       return syncResult;
+    }
+
+    // skipStart: usado pela reinstalacao preservando dados — a sessao/banco
+    // sao restaurados ANTES do start (senao o MyZap subiria sem a sessao).
+    if (options.skipStart) {
+      if (shaParaInstalar) {
+        setInstalledSha(shaParaInstalar);
+      }
+      reportProgress('MyZap instalado (start adiado pelo chamador).', 'installed_no_start', {
+        percent: 90,
+        dirPath,
+      });
+      return {
+        status: 'success',
+        message: 'MyZap instalado e configurado (sem iniciar).',
+      };
     }
 
     reportProgress('Iniciando servico local do MyZap...', 'start_service', {

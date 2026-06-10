@@ -1,15 +1,31 @@
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const { error: logError, info, warn } = require('./myzapLogger');
 const {
   isPortInUse,
   isLocalHttpServiceReachable,
-  getPnpmCommand,
   killProcessTree,
   killProcessesOnPort,
   waitForPortFree,
   envWithNodeShim,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
+
+/**
+ * Instalacao apta a rodar? (index.js + dependencias instaladas)
+ * Usado antes do start (erro claro em vez de stack de MODULE_NOT_FOUND) e
+ * pelo supervisor para pular direto a reinstalacao quando faltam pecas.
+ */
+function isMyZapInstallComplete(dirPath) {
+  try {
+    return Boolean(dirPath)
+      && fs.existsSync(path.join(dirPath, 'index.js'))
+      && fs.existsSync(path.join(dirPath, 'node_modules', 'express'));
+  } catch (_e) {
+    return false;
+  }
+}
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
@@ -144,11 +160,15 @@ async function iniciarMyZap(dirPath, options = {}) {
       };
     }
 
-    const pnpmRunner = await getPnpmCommand();
-    if (!pnpmRunner) {
+    if (!isMyZapInstallComplete(dirPath)) {
+      transition('error', {
+        message: 'Instalacao do MyZap incompleta (codigo ou dependencias ausentes).',
+        phase: 'start_service',
+      });
       return {
         status: 'error',
-        message: 'Nao foi possivel carregar o executor interno de inicializacao do MyZap.',
+        incompleteInstall: true,
+        message: 'Instalacao do MyZap incompleta (codigo ou dependencias ausentes). Use "Reparar MyZap agora" para reinstalar preservando a sessao.',
       };
     }
 
@@ -156,12 +176,17 @@ async function iniciarMyZap(dirPath, options = {}) {
       percent: 93,
       dirPath,
     });
-    const child = spawn(pnpmRunner.command, [...pnpmRunner.prefixArgs, 'start'], {
+    // Start DIRETO: `node index.js` usando o proprio Electron como Node
+    // (ELECTRON_RUN_AS_NODE). Sem pnpm e sem o shim node.cmd no caminho do
+    // start — era o shim (.cmd) que abria janelas de console no PC do cliente.
+    const child = spawn(process.execPath, ['index.js'], {
       cwd: dirPath,
-      shell: pnpmRunner.shell,
-      // shim de `node` no PATH: o `start` do MyZap e `node index.js`; assim ele sobe
-      // mesmo sem Node instalado na maquina (usa o Electron embutido como Node).
-      env: envWithNodeShim(pnpmRunner.env),
+      shell: false,
+      // shim de `node` continua no PATH apenas para subprocessos eventuais.
+      env: {
+        ...envWithNodeShim(process.env),
+        ELECTRON_RUN_AS_NODE: '1',
+      },
       detached: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -264,7 +289,7 @@ async function iniciarMyZap(dirPath, options = {}) {
     transition('running', { message: 'MyZap iniciado e porta confirmada.', dirPath, porta });
 
     info('MyZap iniciado e porta confirmada', {
-      metadata: { porta, dirPath, runner: pnpmRunner.source || pnpmRunner.command },
+      metadata: { porta, dirPath, runner: 'electron-as-node' },
     });
     reportProgress('MyZap iniciado e porta confirmada.', 'ready', {
       percent: 98,
@@ -286,4 +311,9 @@ async function iniciarMyZap(dirPath, options = {}) {
   }
 }
 
-module.exports = { iniciarMyZap, killMyZapProcess, stopMyZapAndFreePort };
+module.exports = {
+  iniciarMyZap,
+  killMyZapProcess,
+  stopMyZapAndFreePort,
+  isMyZapInstallComplete,
+};

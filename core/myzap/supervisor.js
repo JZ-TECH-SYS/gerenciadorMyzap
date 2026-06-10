@@ -26,7 +26,7 @@ const {
     killProcessesOnPort,
     waitForPortFree
 } = require('./processUtils');
-const { iniciarMyZap, stopMyZapAndFreePort } = require('./iniciarMyZap');
+const { iniciarMyZap, stopMyZapAndFreePort, isMyZapInstallComplete } = require('./iniciarMyZap');
 const {
     transition,
     forceTransition,
@@ -237,10 +237,11 @@ async function recover(health, options = {}) {
         const resolution = resolveMyZapDirectory();
         const dir = resolution.dir;
 
-        // Sem instalacao valida nao ha o que "reiniciar": vai direto a instalacao.
+        // Sem instalacao valida/completa nao ha o que "reiniciar": restart so
+        // cuspiria MODULE_NOT_FOUND — vai direto a reinstalacao preservando dados.
         let startStep = manual ? 0 : recoveryStep;
-        if (!isValidInstalledMyZapDirectory(dir)) {
-            info('Supervisor: instalacao local ausente/invalida, indo direto a reinstalacao', {
+        if (!isValidInstalledMyZapDirectory(dir) || !isMyZapInstallComplete(dir)) {
+            info('Supervisor: instalacao local ausente/incompleta, indo direto a reinstalacao', {
                 metadata: { area: 'supervisor', dir }
             });
             startStep = 2;
