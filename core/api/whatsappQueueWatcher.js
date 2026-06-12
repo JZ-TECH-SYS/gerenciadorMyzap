@@ -259,6 +259,14 @@ function supportsQueuePolling() {
   return isCapabilityEnabled('supportsQueuePolling', store);
 }
 
+/**
+ * Valida o MyZap via /verifyRealStatus. Retorna SEMPRE:
+ * { disponivel, funcional, canAutoRepair, mensagem }
+ * - disponivel: o MyZap respondeu HTTP 2xx (comportamento antigo).
+ * - funcional: o campo `functional` da resposta. CONNECTED com Store nao carregado
+ *   (sessao "zumbi") vem functional=false — nesse estado o envio falha com 404
+ *   FALSO de "telefone nao registrado". MyZap antigo (sem o campo) => funcional.
+ */
 async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
   try {
     debug('[FilaMyZap] Validando disponibilidade do MyZap (/verifyRealStatus)...', {
@@ -291,10 +299,54 @@ async function validarDisponibilidadeMyZap(sessionKey, sessionToken) {
         metadata: { categoria: 'conexao', codigo_http: res.status }
       });
     }
-    return res.ok;
+    return {
+      disponivel: res.ok,
+      funcional: res.ok && data?.functional !== false,
+      canAutoRepair: data?.canAutoRepair === true,
+      mensagem: String(data?.message || '')
+    };
   } catch (err) {
     warn('[FilaMyZap] Erro ao validar disponibilidade do MyZap', {
       metadata: { error: err?.message || err }
+    });
+    return { disponivel: false, funcional: false, canAutoRepair: false, mensagem: '' };
+  }
+}
+
+// Auto-reparo da sessao zumbi (CONNECTED sem Store): o /verifyRealStatus indica
+// canAutoRepair=true e o MyZap expoe POST /repairSession. Cooldown evita martelar.
+const REPARO_COOLDOWN_MS = 2 * 60 * 1000;
+let ultimoReparoEm = 0;
+
+async function tentarAutoReparoSessao(sessionKey, sessionToken) {
+  const agora = Date.now();
+  if (agora - ultimoReparoEm < REPARO_COOLDOWN_MS) return false;
+  ultimoReparoEm = agora;
+  try {
+    info('[FilaMyZap] Sessao nao funcional: tentando auto-reparo (/repairSession)', {
+      metadata: { categoria: 'conexao', sessionKey }
+    });
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(`${MYZAP_API_URL}repairSession`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apitoken: sessionToken,
+        sessionkey: sessionKey
+      },
+      body: JSON.stringify({ session: sessionKey }),
+      signal: ctrl.signal
+    });
+    clearTimeout(timeout);
+    const data = await res.json().catch(() => ({}));
+    info('[FilaMyZap] Retorno do auto-reparo', {
+      metadata: { categoria: 'conexao', status: res.status, data: truncarResposta(data) }
+    });
+    return res.ok;
+  } catch (err) {
+    warn('[FilaMyZap] Falha ao acionar auto-reparo da sessao', {
+      metadata: { categoria: 'conexao', error: err?.message || err }
     });
     return false;
   }
@@ -373,6 +425,9 @@ async function atualizarStatusFila(apiBaseUrl, token, payload, detalheErro = nul
       ...body,
       erro: detalheErro.erro || '',
       motivo: detalheErro.motivo || 'desconhecido',
+      // permanente=true (numero sem WhatsApp confirmado): backend nao faz retry
+      // e marca o contato. Backends antigos ignoram o campo (retrocompativel).
+      permanente: detalheErro.permanente === true,
       codigo_http: Number.isFinite(detalheErro.codigo_http) ? detalheErro.codigo_http : 0,
       resposta_myzap: truncarResposta(detalheErro.resposta_myzap),
       etapa: detalheErro.etapa || 'envio'
@@ -413,8 +468,24 @@ function pareceNumeroInvalido(body) {
     return false;
   }
   const temContextoNumero = /(n[uú]mero|number|phone|telefone|whatsapp|destinat)/.test(txt);
-  const temInexistencia = /(does not exist|not exist|n[aã]o existe|nao existe|not on whatsapp|sem whatsapp|invalid number|n[uú]mero inv[aá]lid|invalid wa|not a valid|nao e um numero|n[aã]o registrad)/.test(txt);
+  // "n[aã]o (esta )?registrad" cobre o texto real do MyZap: "O telefone informado
+  // nao ESTA registrado no WhatsApp." (a versao sem o "esta" nao casava e o erro
+  // caia como myzap_http generico, ganhando 3 retries inuteis).
+  const temInexistencia = /(does not exist|not exist|n[aã]o existe|nao existe|not on whatsapp|sem whatsapp|invalid number|n[uú]mero inv[aá]lid|invalid wa|not a valid|nao e um numero|n[aã]o (est[aá] )?registrad|not registered)/.test(txt);
   return temContextoNumero && temInexistencia;
+}
+
+/**
+ * Detecta na resposta do MyZap que a falha e da SESSAO (caida/desconectada), nao
+ * do destinatario. Ex.: {"status":"disconnected","message":"O dispositivo X nao
+ * esta conectado."}. Esses erros NAO devem queimar tentativa do contato.
+ */
+function pareceSessaoCaida(body) {
+  if (!body || typeof body !== 'object') return false;
+  const status = String(body.status || body.state || '').toLowerCase();
+  if (status === 'disconnected' || status === 'notlogged' || status === 'desconnected') return true;
+  const txt = String(body.message || body.error || '').toLowerCase();
+  return /(n[aã]o est[aá] conectad|not connected|disconnected|sess[aã]o (caiu|perdida|encerrada))/.test(txt);
 }
 
 /**
@@ -443,6 +514,16 @@ function extrairMessageId(body) {
     return String(cand._serialized).trim();
   }
   return String(cand).trim();
+}
+
+/** Numero de destino (data.number) do payload da fila; '' se nao der pra extrair. */
+function extrairNumeroDestino(mensagem) {
+  try {
+    const payload = mensagem?.json ? JSON.parse(mensagem.json) : {};
+    return String(payload?.data?.number || '').trim();
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -584,9 +665,16 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackApiToken) {
   }
 
   if (!res.ok || body?.error) {
-    const motivo = pareceNumeroInvalido(body)
-      ? 'numero_invalido'
-      : (res.status >= 400 ? 'myzap_http' : 'desconhecido');
+    // Sessao caida tem prioridade: nesse estado QUALQUER resposta do MyZap e
+    // suspeita (inclusive 404 falso de "telefone nao registrado").
+    let motivo;
+    if (pareceSessaoCaida(body)) {
+      motivo = 'sessao_caida';
+    } else if (pareceNumeroInvalido(body)) {
+      motivo = 'numero_invalido';
+    } else {
+      motivo = res.status >= 400 ? 'myzap_http' : 'desconhecido';
+    }
     return {
       ok: false,
       erro: body?.error || `HTTP ${res.status}`,
@@ -707,8 +795,8 @@ async function processarFilaUmaRodada() {
       return;
     }
 
-    const myzapOk = await validarDisponibilidadeMyZap(configAtual.sessionKey, configAtual.myzapApiToken);
-    if (!myzapOk) {
+    const disponibilidade = await validarDisponibilidadeMyZap(configAtual.sessionKey, configAtual.myzapApiToken);
+    if (!disponibilidade.disponivel) {
       consecutiveSkips++;
       const atraso = aplicarBackoff();
       if (consecutiveSkips % SKIP_LOG_EVERY === 1) {
@@ -719,6 +807,26 @@ async function processarFilaUmaRodada() {
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
         entrarEmPausa('aguardando_myzap',
           'Fila de mensagens pausada: aguardando o MyZap voltar a responder. Ela retoma sozinha.');
+      }
+      return;
+    }
+
+    // MyZap responde mas a sessao NAO esta funcional (ex.: CONNECTED com Store nao
+    // carregado). Enviar nesse estado gera 404 FALSO de "telefone nao registrado"
+    // e queima tentativas dos contatos — entao NAO reivindicamos nada, tentamos o
+    // auto-reparo (com cooldown) e deixamos o backoff espacar as checagens.
+    if (!disponibilidade.funcional) {
+      consecutiveSkips++;
+      const atraso = aplicarBackoff();
+      warn(`[FilaMyZap] Sessao nao funcional — envio bloqueado (skip #${consecutiveSkips}, backoff ${atraso}ms)`, {
+        metadata: { categoria: 'conexao', consecutiveSkips, backoffMs: atraso, detalhe: disponibilidade.mensagem }
+      });
+      if (disponibilidade.canAutoRepair) {
+        await tentarAutoReparoSessao(configAtual.sessionKey, configAtual.myzapApiToken);
+      }
+      if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
+        entrarEmPausa('aguardando_myzap',
+          'Fila pausada: sessao do WhatsApp conectada porem nao funcional. Tente "Reparar" ou reconecte; ela retoma sozinha.');
       }
       return;
     }
@@ -791,6 +899,10 @@ async function processarFilaUmaRodada() {
       idempresa
     } = await obterCredenciaisAtivas();
 
+    // Numeros confirmados sem WhatsApp NESTE ciclo: o 2o componente do mesmo
+    // contato (ex.: sendText apos o sendImage falhar) nem chega ao MyZap.
+    const numerosInvalidosCiclo = new Set();
+
     for (let i = 0; i < lote.length; i++) {
       const mensagem = lote[i];
       if (!ativo) break;
@@ -822,44 +934,98 @@ async function processarFilaUmaRodada() {
       let detalheErro = null;
       // id real da msg no WhatsApp (so no sucesso) -> reportado p/ casar com o ACK.
       let messageId = '';
+      // Sessao caiu neste item: devolve o restante do lote e encerra o ciclo.
+      let sessaoCaiuNoLote = false;
       try {
-        info('[FilaMyZap] Enviando mensagem', {
-          metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa }
-        });
+        const numeroDestino = extrairNumeroDestino(mensagem);
 
-        const envio = await enviarParaMyZap(mensagem, sessionKey, myzapApiToken);
-        novoStatus = envio.ok ? 'enviado' : 'erro';
-
-        if (envio.ok) {
-          messageId = extrairMessageId(envio.body);
-          // Conta no teto diario apenas envios REAIS (skip = ja estava enviado).
-          const enviadosHoje = envio.skipped ? getEnviosHoje() : registrarEnvioHoje();
-          info('[FilaMyZap] Mensagem enviada com sucesso', {
-            metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa, messageId, enviadosHoje }
+        if (numeroDestino && numerosInvalidosCiclo.has(numeroDestino)) {
+          // Numero ja confirmado sem WhatsApp neste ciclo: erro permanente direto,
+          // sem martelar o MyZap de novo (era isso que derrubava a sessao).
+          detalheErro = {
+            erro: 'Numero sem WhatsApp (confirmado neste ciclo)',
+            motivo: 'numero_invalido',
+            permanente: true,
+            codigo_http: 404,
+            resposta_myzap: '',
+            etapa: 'validacao'
+          };
+          info('[FilaMyZap] Pulando componente de numero ja confirmado sem WhatsApp', {
+            metadata: { categoria: 'envio', idfila: mensagem?.idfila, numero: numeroDestino }
           });
         } else {
-          // Monta o detalhe do erro para o backend e para o log estruturado.
-          detalheErro = {
-            erro: envio?.erro || 'Falha no envio',
-            motivo: envio?.motivo || 'desconhecido',
-            codigo_http: Number.isFinite(envio?.codigo_http) ? envio.codigo_http : 0,
-            resposta_myzap: envio?.resposta_myzap ?? '',
-            etapa: envio?.etapa || 'envio'
-          };
-          // metadata.conteudo (string) e renderizado como <pre> no logViewer.
-          warn('[FilaMyZap] Falha ao enviar mensagem para MyZap', {
-            metadata: {
-              categoria: 'erro',
-              idfila: mensagem?.idfila,
-              idempresa: mensagem?.idempresa,
-              motivo: detalheErro.motivo,
-              codigo_http: detalheErro.codigo_http,
-              etapa: detalheErro.etapa,
-              erro: detalheErro.erro,
-              conteudo: truncarResposta(detalheErro.resposta_myzap)
-            }
+          info('[FilaMyZap] Enviando mensagem', {
+            metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa }
           });
-          setUltimoErroStore({ message: detalheErro.erro, etapa: detalheErro.etapa });
+
+          const envio = await enviarParaMyZap(mensagem, sessionKey, myzapApiToken);
+          novoStatus = envio.ok ? 'enviado' : 'erro';
+
+          if (envio.ok) {
+            messageId = extrairMessageId(envio.body);
+            // Conta no teto diario apenas envios REAIS (skip = ja estava enviado).
+            const enviadosHoje = envio.skipped ? getEnviosHoje() : registrarEnvioHoje();
+            info('[FilaMyZap] Mensagem enviada com sucesso', {
+              metadata: { categoria: 'envio', idfila: mensagem?.idfila, idempresa: mensagem?.idempresa, messageId, enviadosHoje }
+            });
+          } else {
+            let motivo = envio?.motivo || 'desconhecido';
+            let permanente = false;
+
+            // 404 "telefone nao registrado" pode ser FALSO quando a sessao esta
+            // zumbi (Store nao carregado). Revalida antes de condenar o numero.
+            if (motivo === 'numero_invalido') {
+              const recheck = await validarDisponibilidadeMyZap(sessionKey, myzapApiToken);
+              if (recheck.funcional) {
+                permanente = true;
+                if (numeroDestino) numerosInvalidosCiclo.add(numeroDestino);
+              } else {
+                motivo = 'sessao_caida';
+              }
+            }
+
+            if (motivo === 'sessao_caida' || motivo === 'timeout') {
+              // Falha da SESSAO, nao do contato: devolve a 'pendente' sem queimar
+              // tentativa e encerra o lote (a sessao precisa se recuperar antes).
+              sessaoCaiuNoLote = true;
+              novoStatus = 'pendente';
+              warn('[FilaMyZap] Sessao caida/instavel durante o envio: item devolvido a fila', {
+                metadata: {
+                  categoria: 'conexao',
+                  idfila: mensagem?.idfila,
+                  idempresa: mensagem?.idempresa,
+                  motivo,
+                  conteudo: truncarResposta(envio?.resposta_myzap)
+                }
+              });
+              setUltimoErroStore({ message: envio?.erro || 'Sessao caida durante o envio', etapa: 'envio' });
+            } else {
+              // Monta o detalhe do erro para o backend e para o log estruturado.
+              detalheErro = {
+                erro: envio?.erro || 'Falha no envio',
+                motivo,
+                permanente,
+                codigo_http: Number.isFinite(envio?.codigo_http) ? envio.codigo_http : 0,
+                resposta_myzap: envio?.resposta_myzap ?? '',
+                etapa: envio?.etapa || 'envio'
+              };
+              // metadata.conteudo (string) e renderizado como <pre> no logViewer.
+              warn('[FilaMyZap] Falha ao enviar mensagem para MyZap', {
+                metadata: {
+                  categoria: 'erro',
+                  idfila: mensagem?.idfila,
+                  idempresa: mensagem?.idempresa,
+                  motivo: detalheErro.motivo,
+                  permanente: detalheErro.permanente,
+                  codigo_http: detalheErro.codigo_http,
+                  etapa: detalheErro.etapa,
+                  erro: detalheErro.erro,
+                  conteudo: truncarResposta(detalheErro.resposta_myzap)
+                }
+              });
+              setUltimoErroStore({ message: detalheErro.erro, etapa: detalheErro.etapa });
+            }
+          }
         }
       } catch (envioError) {
         // Excecao inesperada (fora do fluxo previsto de enviarParaMyZap).
@@ -907,6 +1073,26 @@ async function processarFilaUmaRodada() {
             status: novoStatus
           }
         });
+      }
+
+      if (sessaoCaiuNoLote) {
+        // Devolve o RESTANTE reivindicado a 'pendente' (latencia zero; se o backend
+        // antigo rejeitar o status, o reaper de 'processando' cobre em ~10min) e
+        // entra em backoff: o proximo ciclo so envia com a sessao funcional de novo.
+        const restante = lote.slice(i + 1);
+        for (const item of restante) {
+          await atualizarStatusFila(backendApiUrl, backendApiToken, {
+            idfila: item?.idfila,
+            idempresa: item?.idempresa || idempresa,
+            status: 'pendente'
+          });
+        }
+        warn('[FilaMyZap] Lote interrompido por sessao caida: restante devolvido a fila', {
+          metadata: { categoria: 'conexao', processados: i + 1, devolvidos: restante.length }
+        });
+        consecutiveSkips++;
+        aplicarBackoff();
+        break;
       }
 
       // Humanizacao: pequeno atraso aleatorio ANTES do proximo item do lote.
