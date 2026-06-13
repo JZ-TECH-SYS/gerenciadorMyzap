@@ -352,6 +352,84 @@ async function tentarAutoReparoSessao(sessionKey, sessionToken) {
   }
 }
 
+// Limpeza de sessoes ORFAS no MyZap local: roda 1x por inicializacao do app.
+// Contexto (12/06): instalacoes acumulavam uma sessao de teste ('joaosn', vinda
+// da colecao Insomnia do repo MyZap) que sobe junto com a sessao real. Cada
+// sessao e um Chromium inteiro; as duas competem por memoria/CPU e ZUMBIFICAM
+// JUNTAS (detached frame), derrubando a sessao boa. Removendo a orfa, o MyZap
+// fica com um Chromium so e para de cair sozinho.
+let orfasLimpasNesteBoot = false;
+
+async function limparSessoesOrfas(sessionKeyConfigurada) {
+  // Salvaguarda: sem sessao configurada NAO sabemos o que manter -> nao deleta nada.
+  const manter = String(sessionKeyConfigurada || '').trim();
+  if (!manter) return;
+  const manterLc = manter.toLowerCase();
+
+  try {
+    // /getAllSessions e rota aberta (sem auth). Retorna { ..., data: [devices] }.
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(`${MYZAP_API_URL}getAllSessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: ctrl.signal
+    });
+    clearTimeout(timeout);
+
+    const data = await res.json().catch(() => ({}));
+    const lista = Array.isArray(data?.data) ? data.data
+      : (Array.isArray(data?.result) ? data.result
+        : (Array.isArray(data) ? data : []));
+
+    const orfas = lista.filter((d) => {
+      const s = String(d?.session || '').trim();
+      return s && s.toLowerCase() !== manterLc;
+    });
+
+    if (!orfas.length) return;
+
+    info('[FilaMyZap] Sessoes orfas detectadas no MyZap local — removendo', {
+      metadata: {
+        categoria: 'conexao',
+        manter,
+        orfas: orfas.map((o) => String(o?.session || '').trim())
+      }
+    });
+
+    for (const d of orfas) {
+      const session = String(d?.session || '').trim();
+      const sessionkey = String(d?.sessionkey || '').trim();
+      if (!session) continue;
+      try {
+        const c = new AbortController();
+        const t = setTimeout(() => c.abort(), FETCH_TIMEOUT_MS);
+        // deleteSession exige a sessionkey DAQUELA sessao (veio na listagem);
+        // remove banco + cache + pasta instances/<sessao> (nao volta no restart).
+        const r = await fetch(`${MYZAP_API_URL}deleteSession`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', sessionkey },
+          body: JSON.stringify({ session }),
+          signal: c.signal
+        });
+        clearTimeout(t);
+        info('[FilaMyZap] Sessao orfa removida', {
+          metadata: { categoria: 'conexao', session, status: r.status }
+        });
+      } catch (e) {
+        warn('[FilaMyZap] Falha ao remover sessao orfa (tentara no proximo boot)', {
+          metadata: { categoria: 'conexao', session, error: e?.message || e }
+        });
+      }
+    }
+  } catch (err) {
+    warn('[FilaMyZap] Falha ao listar/limpar sessoes orfas', {
+      metadata: { categoria: 'conexao', error: err?.message || err }
+    });
+  }
+}
+
 async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idempresa = '', limite = 0) {
   const params = new URLSearchParams({
     sessionKey: sessionKey || '',
@@ -809,6 +887,14 @@ async function processarFilaUmaRodada() {
           'Fila de mensagens pausada: aguardando o MyZap voltar a responder. Ela retoma sozinha.');
       }
       return;
+    }
+
+    // MyZap respondeu: aproveita para limpar sessoes orfas UMA vez por boot (antes
+    // mesmo de checar 'funcional' — a orfa rouba recursos justamente quando a
+    // sessao boa esta zumbi). Flag setada antes da chamada: 1 tentativa por boot.
+    if (!orfasLimpasNesteBoot) {
+      orfasLimpasNesteBoot = true;
+      await limparSessoesOrfas(configAtual.sessionKey);
     }
 
     // MyZap responde mas a sessao NAO esta funcional (ex.: CONNECTED com Store nao
