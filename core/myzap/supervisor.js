@@ -42,8 +42,12 @@ const opLock = require('./opLock');
 const store = new Store();
 
 const HEALTH_INTERVAL_MS = 15 * 1000;
-const HEALTH_TIMEOUT_MS = 5 * 1000;
-const FAILS_TO_RECOVER = 3;
+const HEALTH_TIMEOUT_MS = 8 * 1000; // 8s (era 5s): /health faz I/O de banco; sob carga 5s era apertado
+const FAILS_TO_RECOVER = 5; // processo MORTO (porta fechada): recupera após ~75s
+// Processo VIVO porém lento/5xx (degraded) NAO deve ser reiniciado a toa: reiniciar
+// derruba TODAS as sessoes. Em geral e so pico de CPU do envio, que passa sozinho.
+// Por isso exigimos MUITO mais falhas seguidas antes de reiniciar um processo vivo.
+const DEGRADED_FAILS_TO_RECOVER = 16; // ~4 min de lentidao continua antes de agir
 const POST_START_CONFIRM_MS = 60 * 1000;
 const HEALTHY_STREAK_TO_RESET_STEP = 10;
 const BREAKER_MAX_RECOVERIES = 3;
@@ -383,11 +387,14 @@ async function tick() {
 
         healthyStreak = 0;
         failCount += 1;
-        warn(`Supervisor: health ${health.state} (${failCount}/${FAILS_TO_RECOVER})`, {
+        // 'down' = porta fechada (processo morto) => recupera rapido. 'degraded' = vivo
+        // mas lento => tolera muito mais antes de reiniciar (nao derrubar sessoes a toa).
+        const limiteRecuperacao = health.state === 'down' ? FAILS_TO_RECOVER : DEGRADED_FAILS_TO_RECOVER;
+        warn(`Supervisor: health ${health.state} (${failCount}/${limiteRecuperacao})`, {
             metadata: { area: 'supervisor', detail: health.detail || null }
         });
 
-        if (failCount < FAILS_TO_RECOVER) return;
+        if (failCount < limiteRecuperacao) return;
 
         failCount = 0;
         await recover(health);
