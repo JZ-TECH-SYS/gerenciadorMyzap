@@ -907,9 +907,15 @@ async function processarFilaUmaRodada() {
       warn(`[FilaMyZap] Sessao nao funcional — envio bloqueado (skip #${consecutiveSkips}, backoff ${atraso}ms)`, {
         metadata: { categoria: 'conexao', consecutiveSkips, backoffMs: atraso, detalhe: disponibilidade.mensagem }
       });
-      if (disponibilidade.canAutoRepair) {
-        await tentarAutoReparoSessao(configAtual.sessionKey, configAtual.myzapApiToken);
-      }
+      // ⚠️ DESATIVADO (causa raiz do "conecta e cai em segundos"): o auto-reparo
+      // chamava POST /repairSession, que no MyZap faz client.logout() + apaga a
+      // pasta instances/<sessao> (a AUTENTICACAO) + remove do banco — DERRUBANDO a
+      // sessao recem-conectada toda vez que verifyRealStatus retornava
+      // functional:false (ex.: conta com poucas/nenhuma conversa => chatCount=0).
+      // O gerenciadorImpressaoJV usa o MESMO MyZap, NUNCA repara, e fica estavel.
+      // Aqui apenas pulamos o envio (skip/backoff) e deixamos a sessao intacta;
+      // reparo destrutivo so por acao manual do usuario.
+      // (antes: if (disponibilidade.canAutoRepair) await tentarAutoReparoSessao(...))
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
         entrarEmPausa('aguardando_myzap',
           'Fila pausada: sessao do WhatsApp conectada porem nao funcional. Tente "Reparar" ou reconecte; ela retoma sozinha.');
