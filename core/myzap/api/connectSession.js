@@ -1,29 +1,34 @@
 /**
- * Orquestrador de conexao da sessao WhatsApp com auto-recuperacao.
+ * Orquestrador de conexao da sessao WhatsApp.
  *
- * Problema que resolve: as vezes o /start retorna "success" mas a sessao fica
- * ZUMBI no MyZap (estado closed/stuck) e o QR nunca aparece — a UI ficava em
- * "aguardando QR Code..." para sempre.
+ * Problema historico que este modulo agora EVITA: durante a inicializacao a
+ * sessao passa por uma fase em que o MyZap responde 404/INITIALIZING nos
+ * endpoints de status (o client ainda nao esta em memoria) — MESMO ja tendo
+ * gerado o QR. A versao antiga interpretava isso como "sessao zumbi" e DELETAVA
+ * a sessao ~9s depois do start (e o painel ainda forcava reconexao aos ~30s),
+ * apagando a sessao no exato momento em que o QR aparecia. Com Chrome lento o
+ * QR leva 20-40s; o delete sempre vencia a corrida e "o QR nunca aparecia".
  *
- * connectWithRecovery():
- *   1. startSession(); se ja vier QR ou connected, retorna na hora;
- *   2. monitora o snapshot a cada 3s por ate 30s;
- *   3. nada de QR nem connected => sessao zumbi: deleteSession() + retry (1x);
- *   4. esgotou => retorna erro ACIONAVEL (a UI mostra o que fazer).
- *
- * O retry NUNCA derruba uma sessao com QR na tela: ele so dispara quando
- * nenhum QR foi gerado.
+ * Comportamento atual:
+ *   - O fluxo NORMAL de conectar NUNCA deleta a sessao. Ele inicia (start),
+ *     aguarda um curto periodo por um QR imediato e, se ainda nao houver QR,
+ *     devolve status 'initializing' (success) para o painel CONTINUAR pollando
+ *     pacientemente ate o QR aparecer.
+ *   - O delete (encerrar + recriar) so acontece em "Forcar reconexao" manual
+ *     (forceCloseFirst), acionado pelo usuario.
  */
 
-const { info, warn } = require('../myzapLogger');
+const { info } = require('../myzapLogger');
 const startSession = require('./startSession');
 const deleteSession = require('./deleteSession');
 const { parseSessionPayload } = require('./sessionSnapshotParser');
 const { getSessionSnapshot, clearCachedQr } = require('./getSessionSnapshot');
 
-const ZOMBIE_QR_TIMEOUT_MS = 30 * 1000;
+// Espera CURTA pelo QR logo apos o start. E so para o caso de o QR sair rapido;
+// o grosso da espera fica no polling do painel (que nao bloqueia o clique). NAO
+// e um timeout de "zumbi": esgotar aqui significa apenas "ainda iniciando".
+const WAIT_QR_AFTER_START_MS = 12 * 1000;
 const MONITOR_INTERVAL_MS = 3 * 1000;
-const STUCK_READS_TO_BREAK = 3;
 const POS_DELETE_WAIT_MS = 3 * 1000;
 
 function wait(ms) {
@@ -39,16 +44,22 @@ function buildResult(status, sessionStatus, qrCode, message) {
     };
 }
 
-async function monitorarAteQrOuConexao() {
+/**
+ * Aguarda por ate `timeoutMs` um QR ou a conexao da sessao recem-iniciada.
+ * Estados transitorios (initializing / not_found / disconnected) NAO encerram a
+ * espera nem disparam delete: a sessao esta subindo e o QR pode demorar. Retorna
+ * o resultado pronto se vir QR/conexao, ou null se a janela curta expirar (a
+ * sessao segue viva, "iniciando").
+ */
+async function monitorarAteQrOuConexao(timeoutMs) {
     const inicio = Date.now();
-    let stuckReads = 0;
 
-    while (Date.now() - inicio < ZOMBIE_QR_TIMEOUT_MS) {
+    while (Date.now() - inicio < timeoutMs) {
         await wait(MONITOR_INTERVAL_MS);
 
         let snap = null;
         try {
-            // sem cache: decisao de zumbi precisa de dados AO VIVO
+            // sem cache: precisamos do estado AO VIVO do MyZap
             snap = await getSessionSnapshot({ allowCachedQr: false });
         } catch (_e) {
             continue;
@@ -62,72 +73,70 @@ async function monitorarAteQrOuConexao() {
             return buildResult('success', 'waiting_qr', snap.qr_base64, 'Escaneie o QR Code para conectar.');
         }
 
-        if (['not_found', 'disconnected'].includes(snap?.session_status || '')) {
-            stuckReads += 1;
-            if (stuckReads >= STUCK_READS_TO_BREAK) {
-                return null; // sessao presa, sem chance de QR
-            }
-        } else {
-            stuckReads = 0;
-        }
+        // initializing / not_found / disconnected = sessao SUBINDO. Nao desistimos
+        // nem deletamos aqui — quem aguarda o tempo total e o polling do painel.
     }
 
-    return null; // timeout sem QR nem conexao
+    return null; // ainda sem QR dentro da janela curta; segue como "iniciando"
 }
 
 /**
  * @param {{ forceCloseFirst?: boolean }} options
+ *   forceCloseFirst=true => "Forcar reconexao" manual: encerra a sessao atual
+ *   antes de recriar. E o UNICO caminho que deleta a sessao.
  * @returns {Promise<{ status: string, sessionStatus: string, qrCode: string|null, message: string }>}
  */
 async function connectWithRecovery(options = {}) {
     const forceCloseFirst = Boolean(options.forceCloseFirst);
-    const maxAttempts = 2; // tentativa normal + 1 retry pos-limpeza de zumbi
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        if (forceCloseFirst || attempt > 1) {
-            info('connectWithRecovery: encerrando sessao atual antes de reconectar', {
-                metadata: { area: 'connectSession', attempt, forceCloseFirst }
-            });
-            try {
-                await deleteSession();
-            } catch (_e) { /* melhor esforco */ }
-            clearCachedQr();
-            await wait(POS_DELETE_WAIT_MS);
-        }
-
-        const startResp = await startSession();
-        if (!startResp) {
-            return buildResult(
-                'error',
-                'unreachable',
-                null,
-                'O MyZap local nao respondeu ao iniciar a sessao. O servico pode estar reiniciando — aguarde alguns segundos e tente novamente.'
-            );
-        }
-
-        const parsed = parseSessionPayload(startResp);
-        if (parsed.isConnected) {
-            return buildResult('success', 'connected', null, 'WhatsApp conectado.');
-        }
-        if (parsed.qrCode) {
-            return buildResult('success', 'waiting_qr', parsed.qrCode, 'Escaneie o QR Code para conectar.');
-        }
-
-        const monitored = await monitorarAteQrOuConexao();
-        if (monitored) {
-            return monitored;
-        }
-
-        warn('connectWithRecovery: sessao sem QR e sem conexao (zumbi)', {
-            metadata: { area: 'connectSession', attempt, maxAttempts }
+    // SO no "Forcar reconexao" manual derrubamos a sessao. O fluxo normal nunca
+    // deleta — era o delete automatico que apagava o QR durante a inicializacao.
+    if (forceCloseFirst) {
+        info('connectWithRecovery: forcando encerramento da sessao antes de reconectar', {
+            metadata: { area: 'connectSession', forceCloseFirst }
         });
+        try {
+            await deleteSession();
+        } catch (_e) { /* melhor esforco */ }
+        clearCachedQr();
+        await wait(POS_DELETE_WAIT_MS);
     }
 
+    const startResp = await startSession();
+    if (!startResp) {
+        return buildResult(
+            'error',
+            'unreachable',
+            null,
+            'O MyZap local nao respondeu ao iniciar a sessao. O servico pode estar reiniciando — aguarde alguns segundos e tente novamente.'
+        );
+    }
+
+    const parsed = parseSessionPayload(startResp);
+    if (parsed.isConnected) {
+        return buildResult('success', 'connected', null, 'WhatsApp conectado.');
+    }
+    if (parsed.qrCode) {
+        return buildResult('success', 'waiting_qr', parsed.qrCode, 'Escaneie o QR Code para conectar.');
+    }
+
+    // Espera curta por um QR imediato (sessao ja quente). Se vier, otimo.
+    const monitored = await monitorarAteQrOuConexao(WAIT_QR_AFTER_START_MS);
+    if (monitored) {
+        return monitored;
+    }
+
+    // Ainda sem QR: a sessao esta INICIANDO (Chrome carregando), nao e zumbi.
+    // Devolve success/initializing para o painel CONTINUAR pollando ate o QR
+    // aparecer, SEM deletar nada. Recuperacao destrutiva so via "Forcar reconexao".
+    info('connectWithRecovery: sessao iniciando, QR ainda nao disponivel — painel seguira aguardando', {
+        metadata: { area: 'connectSession', forceCloseFirst }
+    });
     return buildResult(
-        'error',
-        'zombie',
+        'success',
+        'initializing',
         null,
-        'A sessao do WhatsApp nao gerou QR Code mesmo apos reinicio automatico. Use "Forcar reconexao" ou o diagnostico do painel.'
+        'A sessao esta iniciando (o navegador pode levar alguns segundos). Aguardando o QR Code...'
     );
 }
 

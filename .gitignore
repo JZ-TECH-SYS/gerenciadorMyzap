@@ -5,6 +5,10 @@ dist
 nul
 tmpclaude-*
 
+# Logs exportados para analise local (nao versionar) e metadados do Windows/WSL
+*.rar
+*:Zone.Identifier
+
 # Segredos/dados locais do MyZap — NUNCA comitar (o seed versionado e o
 # db.seed.sqlite vazio; o .env e gerado por maquina em core/myzap/envTemplate.js)
 core/myzap/configs/.env

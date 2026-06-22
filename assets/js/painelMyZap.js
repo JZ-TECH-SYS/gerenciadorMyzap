@@ -25,7 +25,6 @@ let qrPollingActive = false;
 let qrPollingAttempts = 0;
 let qrPollingErrorStreak = 0;
 let qrPollingNoQrTicks = 0;
-let qrPollingAutoReconnectUsed = false;
 let qrPollingDelayMs = 3000;
 let lastConfigDebugPayload = null;
 let currentCapabilityState = {
@@ -41,7 +40,9 @@ let currentPrivilegeStatus = {
   message: ''
 };
 const QR_POLL_INTERVAL_MS = 3000;
-const QR_POLL_MAX_ATTEMPTS = 40; // ~120s total
+// ~180s: o navegador do MyZap pode levar dezenas de segundos para gerar o QR
+// (Chrome lento). Como NAO deletamos mais a sessao no meio, basta esperar.
+const QR_POLL_MAX_ATTEMPTS = 60;
 
 const CAPABILITY_FIELD_IDS = {
   supportsIaConfig: 'capability-ia-config-mode',
@@ -1194,34 +1195,16 @@ async function tickQrPolling() {
     return;
   }
 
-  // ---- Sem QR e sem conexao: candidato a sessao zumbi ----
+  // ---- Sem QR ainda: a sessao esta SUBINDO (Chrome/Puppeteer carregando) ----
+  // NAO forcamos reconexao automatica aqui. Deletar/reiniciar neste momento
+  // apagaria a sessao no exato instante em que o MyZap gera o QR (era a causa do
+  // "QR nunca aparece"). Apenas informamos e seguimos aguardando ate o limite do
+  // polling; se realmente expirar, o usuario recebe o botao de reconexao manual.
   qrPollingNoQrTicks++;
-  if (qrPollingNoQrTicks >= 10 && !qrPollingAutoReconnectUsed) {
-    qrPollingAutoReconnectUsed = true;
-    console.log('[MyZap UI] Sessao sem QR ha ~30s, forcando reconexao automatica');
-    statusIndicator.className = 'status-indicator waiting';
-    statusIndicator.textContent = 'Reiniciando sessao automaticamente...';
-    qrBox.innerHTML = '<span class="text-muted-small">A sessao nao gerou QR Code. Reiniciando automaticamente...</span>';
-
-    try {
-      var result = await window.api.forceReconnect();
-      if (result && result.status === 'success' && result.sessionStatus === 'connected') {
-        stopQrPolling();
-        renderConnected(qrBox, statusIndicator);
-        return;
-      }
-      if (result && result.status === 'success' && result.qrCode) {
-        qrPollingNoQrTicks = 0;
-        renderQr(qrBox, statusIndicator, result.qrCode);
-        return;
-      }
-      stopQrPolling();
-      renderReconnectError(qrBox, statusIndicator,
-        (result && result.message) || 'Nao foi possivel reiniciar a sessao automaticamente.');
-    } catch (reconnectErr) {
-      stopQrPolling();
-      renderReconnectError(qrBox, statusIndicator, 'Erro ao reiniciar a sessao automaticamente.');
-    }
+  statusIndicator.className = 'status-indicator waiting';
+  statusIndicator.textContent = 'Aguardando QR Code (a sessao esta iniciando)...';
+  if (qrPollingNoQrTicks === 1 || qrPollingNoQrTicks % 4 === 0) {
+    qrBox.innerHTML = '<span class="text-muted-small">A sessao esta iniciando no MyZap. O navegador pode levar alguns segundos para gerar o QR Code — aguarde...</span>';
   }
 }
 
@@ -1270,7 +1253,6 @@ function startQrPolling() {
   stopQrPolling();
   console.log('[MyZap UI] startQrPolling: iniciando polling de QR Code');
   qrPollingActive = true;
-  qrPollingAutoReconnectUsed = false;
   qrPollingDelayMs = QR_POLL_INTERVAL_MS;
   // Primeira tentativa apos 2s (MyZap precisa de tempo para gerar o QR)
   qrPollingTimer = setTimeout(qrPollingLoop, 2000);
