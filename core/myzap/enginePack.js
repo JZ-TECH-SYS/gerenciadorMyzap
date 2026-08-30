@@ -52,6 +52,22 @@ function getErrorMessage(err) {
     return err && err.message ? err.message : String(err);
 }
 
+/**
+ * Diretório do MOTOR para operações de pack. Confia no caminho salvo mesmo
+ * que a pasta AINDA NÃO exista — é instalação nova. (O resolveMyZapDirectory
+ * do autoConfig rejeita pasta sem package.json e cai no default: regra certa
+ * para achar uma instalação LEGADA existente, errada para instalar — o E2E
+ * pegou o pack indo parar no LOCALAPPDATA real em vez do destino pedido.)
+ */
+function getEngineDir(explicitDir) {
+    if (explicitDir) return path.resolve(String(explicitDir));
+    const stored = String(store.get('myzap_diretorio') || '').trim();
+    if (stored) return path.resolve(stored);
+    // eslint-disable-next-line global-require
+    const { getDefaultMyZapDirectory } = require('./autoConfig');
+    return getDefaultMyZapDirectory();
+}
+
 function rmrfSafe(target) {
     try {
         if (target && fs.existsSync(target)) {
@@ -337,11 +353,9 @@ async function applyPackZip(zipPath, options = {}) {
         ? options.onProgress
         : () => {};
     // eslint-disable-next-line global-require
-    const { resolveMyZapDirectory } = require('./autoConfig');
-    // eslint-disable-next-line global-require
     const { iniciarMyZap, stopMyZapAndFreePort, isMyZapInstallComplete } = require('./iniciarMyZap');
 
-    const engineDir = resolveMyZapDirectory().dir;
+    const engineDir = getEngineDir(options.engineDir);
     const staging = `${engineDir}.staging`;
     const old = `${engineDir}.old`;
 
@@ -450,9 +464,7 @@ async function applyPackZip(zipPath, options = {}) {
 /* ── API de alto nível ──────────────────────────────────────── */
 
 function getInstalledPackVersion() {
-    // eslint-disable-next-line global-require
-    const { resolveMyZapDirectory } = require('./autoConfig');
-    const manifest = readEngineManifest(resolveMyZapDirectory().dir);
+    const manifest = readEngineManifest(getEngineDir());
     return manifest?.version || null;
 }
 
@@ -466,9 +478,7 @@ async function checkAndUpdatePack(options = {}) {
     const force = Boolean(options.force);
 
     return withLifecycleLock('pack-update', async () => {
-        // eslint-disable-next-line global-require
-        const { resolveMyZapDirectory } = require('./autoConfig');
-        const engineDir = resolveMyZapDirectory().dir;
+        const engineDir = getEngineDir(options.engineDir);
         const installed = readEngineManifest(engineDir)?.version || null;
 
         const local = findLocalPack();
@@ -521,7 +531,7 @@ async function checkAndUpdatePack(options = {}) {
                 kind: source.kind
             }
         });
-        return applyPackZip(zipPath, { onProgress: reportProgress });
+        return applyPackZip(zipPath, { onProgress: reportProgress, engineDir });
     });
 }
 
@@ -531,10 +541,8 @@ async function checkAndUpdatePack(options = {}) {
  * supervisor quando a instalação é em modo pack.
  * @returns {Promise<object|null>} null = não há pack para reaplicar (legado)
  */
-async function repairEngineFromLocalSources() {
-    // eslint-disable-next-line global-require
-    const { resolveMyZapDirectory } = require('./autoConfig');
-    const engineDir = resolveMyZapDirectory().dir;
+async function repairEngineFromLocalSources(options = {}) {
+    const engineDir = getEngineDir(options.engineDir);
     const cacheDir = getPacksCacheDirFor(engineDir);
 
     let zipPath = null;
@@ -556,15 +564,13 @@ async function repairEngineFromLocalSources() {
     info('enginePack: reparo do motor a partir de pack local', {
         metadata: { area: 'enginePack', zipPath }
     });
-    return applyPackZip(zipPath, {});
+    return applyPackZip(zipPath, { engineDir });
 }
 
 /** Sobras de trocas interrompidas (.staging/.old/.broken) — limpar no boot. */
-function cleanupLeftovers() {
+function cleanupLeftovers(options = {}) {
     try {
-        // eslint-disable-next-line global-require
-        const { resolveMyZapDirectory } = require('./autoConfig');
-        const engineDir = resolveMyZapDirectory().dir;
+        const engineDir = getEngineDir(options.engineDir);
         for (const suffix of ['.staging', '.broken']) {
             rmrfSafe(`${engineDir}${suffix}`);
         }
@@ -583,9 +589,7 @@ function cleanupLeftovers() {
  * @returns {Promise<object|null>} null = nenhuma fonte de pack disponível
  */
 async function installFromBestSourceUnlocked(options = {}) {
-    // eslint-disable-next-line global-require
-    const { resolveMyZapDirectory } = require('./autoConfig');
-    const engineDir = resolveMyZapDirectory().dir;
+    const engineDir = getEngineDir(options.engineDir);
     const reportProgress = (typeof options.onProgress === 'function')
         ? options.onProgress
         : () => {};
@@ -617,7 +621,7 @@ async function installFromBestSourceUnlocked(options = {}) {
             version: source.manifest?.version || null
         }
     });
-    return applyPackZip(zipPath, { onProgress: reportProgress });
+    return applyPackZip(zipPath, { onProgress: reportProgress, engineDir });
 }
 
 module.exports = {

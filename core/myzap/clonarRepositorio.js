@@ -382,6 +382,7 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
         const enginePack = require('./enginePack');
         const viaPack = await enginePack.installFromBestSourceUnlocked({
           onProgress: reportProgress,
+          engineDir: dirPath,
         });
         if (viaPack && viaPack.status === 'success') {
           return {

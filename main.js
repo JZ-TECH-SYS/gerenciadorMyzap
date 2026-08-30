@@ -255,14 +255,6 @@ function getCapabilityMetadata(capability) {
   return getCapabilityEntry(capability, store) || null;
 }
 
-function isMyZapServiceAtivo() {
-  return Boolean(
-    getMyzapStatusWatcherInfo().ativo
-    || getTokenSyncWatcherStatus().ativo
-    || getWhatsappQueueWatcherStatus().ativo
-  );
-}
-
 function clearQueueAutoStartTimer() {
   if (queueAutoStartTimer) {
     clearInterval(queueAutoStartTimer);
