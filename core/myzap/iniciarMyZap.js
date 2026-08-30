@@ -12,6 +12,7 @@ const {
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
 const { puppeteerCacheEnv } = require('./localSnapshot');
+const { isPackEngine, getEngineNodeExe, resolveDataDir } = require('./enginePaths');
 
 /**
  * Instalacao apta a rodar? (index.js + dependencias instaladas)
@@ -177,20 +178,34 @@ async function iniciarMyZap(dirPath, options = {}) {
       percent: 93,
       dirPath,
     });
-    // Start DIRETO: `node index.js` usando o proprio Electron como Node
-    // (ELECTRON_RUN_AS_NODE). Sem pnpm e sem o shim node.cmd no caminho do
-    // start — era o shim (.cmd) que abria janelas de console no PC do cliente.
-    const child = spawn(process.execPath, ['index.js'], {
-      cwd: dirPath,
-      shell: false,
+    // Runtime (v3): pack traz o PROPRIO node.exe (ABI do sqlite3 casado no
+    // build — o Electron do app pode subir de versao sem invalidar o motor).
+    // Sem node embutido (instalacao legada), cai no Electron-as-Node de sempre.
+    const nodeExe = getEngineNodeExe(dirPath);
+    const packMode = isPackEngine(dirPath);
+    // CWD = diretorio de DADOS. No pack, e o myzap-data ao lado (o .env, o
+    // sqlite e a sessao ficam FORA do codigo — update nunca encosta neles);
+    // no legado, resolve para o proprio dirPath (comportamento identico).
+    const dataDir = resolveDataDir(dirPath);
+    if (packMode) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    const spawnEnv = {
       // shim de `node` continua no PATH apenas para subprocessos eventuais.
-      // Chromium embutido no snapshot (se existir) fica visivel ao puppeteer —
+      // Chromium embutido (snapshot/pack) fica visivel ao puppeteer —
       // maquina sem Chrome instalado tambem consegue abrir o WhatsApp.
-      env: {
-        ...envWithNodeShim(process.env),
-        ...puppeteerCacheEnv(dirPath),
-        ELECTRON_RUN_AS_NODE: '1',
-      },
+      ...envWithNodeShim(process.env),
+      ...puppeteerCacheEnv(dirPath),
+    };
+    if (!nodeExe) {
+      spawnEnv.ELECTRON_RUN_AS_NODE = '1';
+    }
+
+    const child = spawn(nodeExe || process.execPath, [path.join(dirPath, 'index.js')], {
+      cwd: dataDir,
+      shell: false,
+      env: spawnEnv,
       detached: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],

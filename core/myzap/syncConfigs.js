@@ -3,12 +3,16 @@ const path = require('path');
 const Store = require('electron-store');
 const { info, warn, error } = require('./myzapLogger');
 const { getOrCreateLocalToken, buildEnvContent } = require('./envTemplate');
+const { resolveDataDir } = require('./enginePaths');
 
 const store = new Store();
 
-function getBundledDbPath() {
-    // Banco SEMENTE vazio (apenas schema das migrations do MyZap). O MyZap nao
-    // roda migrations no boot, entao precisa nascer com as tabelas criadas.
+function getSeedDbPath(engineDir) {
+    // Semente do banco: preferir a do PACK (gerada pelas migrations no CI —
+    // sempre em dia com o codigo daquela versao). O db.seed.sqlite embutido
+    // no app fica como ultimo recurso para instalacoes legadas.
+    const packSeed = path.join(engineDir, 'seed', 'db.sqlite');
+    if (fs.existsSync(packSeed)) return packSeed;
     return path.join(__dirname, 'configs', 'db.seed.sqlite');
 }
 
@@ -24,7 +28,13 @@ function syncMyZapConfigs(dirPath, options = {}) {
         const overwriteDb = Boolean(options.overwriteDb);
         const envContent = String(options.envContent || '').trim();
 
-        const envDest = path.join(dirPath, '.env');
+        // .env e banco moram no diretorio de DADOS: no pack e o myzap-data ao
+        // lado (update de motor nunca encosta); no legado resolve para o
+        // proprio dirPath (comportamento antigo intacto).
+        const dataDir = resolveDataDir(dirPath);
+        fs.mkdirSync(dataDir, { recursive: true });
+
+        const envDest = path.join(dataDir, '.env');
         // Sem conteudo explicito, gera o template em codigo com o TOKEN unico
         // desta maquina (o antigo .env comitado com TOKEN compartilhado morreu).
         const envToWrite = envContent || buildEnvContent({
@@ -40,8 +50,8 @@ function syncMyZapConfigs(dirPath, options = {}) {
 
         fs.writeFileSync(envDest, envToWrite, 'utf8');
 
-        const dbOrigem = getBundledDbPath();
-        const dbDestDir = path.join(dirPath, 'database');
+        const dbOrigem = getSeedDbPath(dirPath);
+        const dbDestDir = path.join(dataDir, 'database');
         const dbDestFile = path.join(dbDestDir, 'db.sqlite');
         let dbCopied = false;
         let dbSkipped = false;

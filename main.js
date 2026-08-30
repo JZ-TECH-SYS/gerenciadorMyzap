@@ -62,6 +62,10 @@ const {
   forceRepair
 } = require('./core/myzap/supervisor');
 const { checkAndUpdateIfNeeded } = require('./core/myzap/updateChecker');
+const {
+  checkAndUpdatePack,
+  cleanupLeftovers: cleanupPackLeftovers
+} = require('./core/myzap/enginePack');
 const { runPostUpdateRepairIfNeeded } = require('./core/myzap/firstRunRepair');
 const { offerPerUserMigration, redirectToPerUserIfInstalled } = require('./core/migracaoInstalador');
 const deleteSession = require('./core/myzap/api/deleteSession');
@@ -480,19 +484,32 @@ async function updateMyZapNow() {
       return;
     }
 
-    // 2) update real de CODIGO por commit SHA (antes, o botao so reaplicava
-    // config — instalacao via ZIP nunca recebia versao nova do MyZap)
-    const codeResult = await checkAndUpdateIfNeeded();
-    if (codeResult?.status === 'success' && codeResult?.upToDate) {
-      toast('MyZap ja esta na versao mais recente. Configuracoes reaplicadas.');
-    } else if (codeResult?.status === 'success') {
-      toast('MyZap atualizado para a versao mais recente!');
-    } else if (codeResult?.status === 'busy') {
+    // 2) update real de VERSAO. Preferencia (v3): Runtime Pack — artefato
+    // pronto do canal de releases, troca atomica com rollback. Sem release no
+    // canal ainda, cai no fluxo legado por commit SHA.
+    const packResult = await checkAndUpdatePack();
+    if (packResult?.status === 'success') {
+      toast(packResult.message || 'MyZap atualizado para a versao mais recente!');
+    } else if (packResult?.status === 'up_to_date') {
+      toast(packResult.message || 'MyZap ja esta na versao mais recente. Configuracoes reaplicadas.');
+    } else if (packResult?.status === 'busy') {
       toast('Outra operacao do MyZap em andamento. Tente novamente em instantes.');
-    } else if (codeResult?.status === 'skipped') {
-      toast('MyZap reiniciado. Nao foi possivel checar nova versao (sem rede?).');
+    } else if (packResult?.status === 'no_source') {
+      // Canal ainda sem release publicada: heranca v2 (SHA da main).
+      const codeResult = await checkAndUpdateIfNeeded();
+      if (codeResult?.status === 'success' && codeResult?.upToDate) {
+        toast('MyZap ja esta na versao mais recente. Configuracoes reaplicadas.');
+      } else if (codeResult?.status === 'success') {
+        toast('MyZap atualizado para a versao mais recente!');
+      } else if (codeResult?.status === 'busy') {
+        toast('Outra operacao do MyZap em andamento. Tente novamente em instantes.');
+      } else if (codeResult?.status === 'skipped') {
+        toast('MyZap reiniciado. Nao foi possivel checar nova versao (sem rede?).');
+      } else {
+        toast(`Falha ao atualizar codigo do MyZap: ${codeResult?.message || 'erro desconhecido'}`);
+      }
     } else {
-      toast(`Falha ao atualizar codigo do MyZap: ${codeResult?.message || 'erro desconhecido'}`);
+      toast(`Falha ao atualizar MyZap: ${packResult?.message || 'erro desconhecido'}`);
     }
 
     if (isMyZapModoLocal()) {
@@ -512,13 +529,13 @@ async function updateMyZapNow() {
   }
 }
 
-// IMPORTANTE: o update AUTOMATICO de codigo do MyZap foi DESLIGADO.
-// Atualizar o codigo troca arquivos e roda pnpm install; qualquer
-// interrupcao (rede, antivirus, app fechado) pode deixar a instalacao
-// incompleta. Disparar isso sozinho a cada 6h quebrava clientes saudaveis
-// so porque um commit novo mudou o SHA. Agora o update de codigo so acontece
-// pelo botao "Atualizar MyZap agora" (usuario presente). No boot apenas
-// ADOTAMOS o SHA atual como baseline, SEM nunca trocar codigo.
+// HISTORIA: o update automatico de CODIGO (por SHA da main + pnpm install no
+// cliente) foi desligado na v2.1.x porque qualquer interrupcao deixava a
+// instalacao incompleta e um push na main quebrava clientes saudaveis. O
+// Runtime Pack (v3) elimina as tres causas: artefato PRONTO e testado (gate
+// por tag), troca atomica por rename e ROLLBACK automatico se a versao nova
+// nao ficar saudavel. Por isso o automatico volta — só via pack, nunca via
+// SHA. Sem release no canal ainda, apenas adota a baseline SHA como antes.
 async function adoptMyZapBaselineSha() {
   if (!hasValidConfigMyZap() || !isMyZapModoLocal()) return;
   if (store.get('myzap_userRemovedLocal') === true) return;
@@ -541,14 +558,47 @@ async function adoptMyZapBaselineSha() {
   }
 }
 
+async function runAutoPackUpdateCycle() {
+  if (!hasValidConfigMyZap() || !isMyZapModoLocal()) return;
+  if (store.get('myzap_userRemovedLocal') === true) return;
+
+  // Educado: no meio de um lote de envio nao se troca o motor. O proximo
+  // ciclo (6h) — ou o retry curto abaixo — pega a janela ociosa.
+  try {
+    if (getWhatsappQueueWatcherStatus()?.processando) {
+      myzapInfo('MyZap: update automatico adiado (fila processando)');
+      setTimeout(() => { runAutoPackUpdateCycle().catch(() => {}); }, 15 * 60 * 1000);
+      return;
+    }
+  } catch (_e) { /* segue */ }
+
+  try {
+    const result = await checkAndUpdatePack();
+    if (result?.status === 'success') {
+      toast(result.message || 'MyZap atualizado automaticamente.');
+      applyMyZapRuntimeByMode('auto_pack_update');
+    } else if (result?.status === 'no_source') {
+      await adoptMyZapBaselineSha();
+    } else if (result?.status === 'error') {
+      myzapWarn('MyZap: update automatico via pack falhou', { metadata: { result } });
+    }
+  } catch (err) {
+    myzapWarn('MyZap: erro no ciclo automatico de update do pack', {
+      metadata: { error: err?.message || String(err) }
+    });
+  }
+}
+
 function scheduleMyZapCodeUpdateCheck() {
   if (myzapCodeUpdateTimer) return;
-  myzapCodeUpdateTimer = true; // marca como agendado (sem timer real)
 
-  // Apenas registra a baseline; NAO ha update automatico periodico.
   setTimeout(() => {
-    adoptMyZapBaselineSha();
+    runAutoPackUpdateCycle().catch(() => {});
   }, MYZAP_CODE_UPDATE_FIRST_DELAY_MS);
+
+  myzapCodeUpdateTimer = setInterval(() => {
+    runAutoPackUpdateCycle().catch(() => {});
+  }, MYZAP_CODE_UPDATE_INTERVAL_MS);
 }
 
 async function autoStartMyZap() {
@@ -785,6 +835,10 @@ if (!hasSingleInstanceLock) {
       }
     } catch (_e) { /* melhor esforco */ }
 
+    // Sobras de trocas de pack interrompidas (.staging/.old/.broken) — se o
+    // motor atual esta integro, o resto e lixo recuperavel.
+    try { cleanupPackLeftovers(); } catch (_e) { /* melhor esforco */ }
+
     // Primeiro boot desta versao: saneia heranca da versao anterior (zumbis
     // na porta, progresso/QR travados) ANTES de subir o MyZap — quem instala
     // a versao nova por cima da bugada nao precisa fazer nada na mao.
@@ -816,7 +870,10 @@ if (!hasSingleInstanceLock) {
       appUpdateCheckTimer = null;
     }
 
-    myzapCodeUpdateTimer = null;
+    if (myzapCodeUpdateTimer) {
+      clearInterval(myzapCodeUpdateTimer);
+      myzapCodeUpdateTimer = null;
+    }
 
     clearQueueAutoStartTimer();
     stopSupervisor();
