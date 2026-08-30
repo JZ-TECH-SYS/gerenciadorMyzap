@@ -308,7 +308,12 @@ async function iniciarMyZap(dirPath, options = {}) {
     transition('running', { message: 'MyZap iniciado e porta confirmada.', dirPath, porta });
 
     info('MyZap iniciado e porta confirmada', {
-      metadata: { porta, dirPath, runner: 'electron-as-node' },
+      metadata: {
+        porta,
+        dirPath,
+        runner: nodeExe ? 'pack-node' : 'electron-as-node',
+        dataDir: packMode ? dataDir : null,
+      },
     });
     reportProgress('MyZap iniciado e porta confirmada.', 'ready', {
       percent: 98,

@@ -920,7 +920,19 @@ if (!hasSingleInstanceLock) {
     try { queue = getWhatsappQueueWatcherStatus(); } catch (_e) { /* */ }
     let supervisor = null;
     try { supervisor = getSupervisorStatus(); } catch (_e) { /* */ }
+    // Progresso de instalacao/atualizacao do motor: o semaforo mostra
+    // "Preparando o MyZap (x%)" em vez de parecer travado/quebrado no
+    // primeiro uso (extrair 245MB leva ~1 minuto).
+    let progress = null;
+    try { progress = getCurrentProgress(); } catch (_e) { /* */ }
+    let engineState = null;
+    try {
+      const { getStateSnapshot } = require('./core/myzap/stateMachine');
+      engineState = getStateSnapshot();
+    } catch (_e) { /* */ }
     return {
+      progress,
+      engineState,
       appVersion: app.getVersion(),
       packVersion: (() => { try { return getInstalledPackVersion(); } catch (_e) { return null; } })(),
       updater: (() => { try { return getUpdaterStatus(); } catch (_e) { return null; } })(),
@@ -950,11 +962,20 @@ if (!hasSingleInstanceLock) {
     try {
       const updateIaConfig = require('./core/myzap/api/updateIaConfig');
       const result = await updateIaConfig(texto);
-      return result || { status: 'success', message: 'Mensagem padrao salva.' };
+      if (result?.status === 'success' || result?.status === 'skipped') {
+        return result;
+      }
+      // Nunca devolver erro cru de rede ("fetch failed") para a tela: a
+      // mensagem FICOU salva no store e sera reaplicada pelo sync normal
+      // quando o servico/sessao estiverem de pe.
+      return {
+        status: 'warning',
+        message: 'Mensagem salva. Sera aplicada assim que o MyZap local estiver no ar.'
+      };
     } catch (err) {
       return {
         status: 'warning',
-        message: 'Mensagem salva; sera aplicada quando o MyZap local estiver no ar.'
+        message: 'Mensagem salva. Sera aplicada assim que o MyZap local estiver no ar.'
       };
     }
   });

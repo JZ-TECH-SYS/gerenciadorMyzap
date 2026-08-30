@@ -75,12 +75,25 @@ async function pollSessao(force = false) {
     pollSessaoBusy = false;
   }
   renderTudo();
+  talvezAutoConectar();
 }
 
 /* ── SEMÁFORO: estado composto → frase + ação ── */
 function avaliar() {
   const o = overview;
   if (!o) return { nivel: 'neutro', titulo: 'Verificando o sistema…', explicacao: 'Aguarde um instante.', acao: null };
+
+  // Instalação/atualização do motor em andamento: mostrar o PROGRESSO real
+  // (extrair o pacote leva ~1 min no primeiro uso — sem isso parece travado).
+  if (o.progress?.active) {
+    const pct = Number(o.progress?.metadata?.percent ?? o.engineState?.progress ?? 0);
+    return {
+      nivel: 'neutro',
+      titulo: `Preparando o MyZap… ${pct ? `(${Math.round(pct)}%)` : ''}`,
+      explicacao: o.progress?.message || 'Instalando o serviço de WhatsApp neste computador. Isso acontece uma única vez.',
+      acao: null
+    };
+  }
 
   if (!o.configured) {
     return {
@@ -124,7 +137,8 @@ function avaliar() {
       nivel: 'atencao',
       titulo: 'O WhatsApp não está conectado',
       explicacao: 'Sem a conexão, as mensagens ficam aguardando na fila. Conectar leva menos de um minuto com o QR Code.',
-      acao: { label: 'Conectar WhatsApp', fn: () => irParaAba('whatsapp') }
+      // 1 clique = já vai pra aba E dispara a conexão (o QR aparece sozinho)
+      acao: { label: 'Conectar WhatsApp', fn: () => { irParaAba('whatsapp'); conectar(); } }
     };
   }
   if (sessao.status === 'aguardando_qr') {
@@ -239,8 +253,11 @@ function renderTudo() {
 
     const q = o.queue;
     const envioAtivo = Boolean(q?.ativo) && !o.envioPausadoPeloUsuario;
-    $('dot-envio').className = `dot ${o.envioPausadoPeloUsuario ? 'dot-warn' : (envioAtivo ? 'dot-ok' : 'dot-warn')}`;
-    $('card-envio').textContent = o.envioPausadoPeloUsuario ? 'Pausado por você' : (envioAtivo ? 'Automático' : (q?.motivoPausa ? 'Aguardando' : 'Preparando…'));
+    const aguardandoWhats = sessao.status !== 'conectada' && sessao.status !== 'modo_web';
+    $('dot-envio').className = `dot ${o.envioPausadoPeloUsuario ? 'dot-warn' : (envioAtivo && !aguardandoWhats ? 'dot-ok' : 'dot-warn')}`;
+    $('card-envio').textContent = o.envioPausadoPeloUsuario
+      ? 'Pausado por você'
+      : (aguardandoWhats ? 'Aguardando WhatsApp' : (envioAtivo ? 'Automático' : (q?.motivoPausa ? 'Aguardando' : 'Ligando…')));
     const teto = q?.ritmo?.tetoDiario;
     $('card-envio-sub').textContent = `hoje: ${q?.enviadosHoje ?? 0}${teto ? ` de ${teto}` : ''} enviadas`;
 
@@ -311,26 +328,68 @@ async function repararAgora() {
 }
 
 /* ── ações: WhatsApp ── */
-async function conectar() {
-  $('wa-feedback').textContent = 'Iniciando a sessão…';
+// Auto-conexão: a primeira vez que o serviço fica de pé sem sessão, o app já
+// dispara a conexão sozinho (o QR aparece sem clique). Se o USUÁRIO
+// desconectar de propósito, respeitamos: nada de reconectar por cima.
+let conectandoAgora = false;
+let autoConectouNesteBoot = false;
+let usuarioDesconectou = false;
+
+function setBotaoConectar(ocupado) {
+  const b = $('btn-conectar');
+  b.disabled = ocupado;
+  b.textContent = ocupado ? 'Gerando QR Code…' : 'Conectar';
+}
+
+async function conectar(auto = false) {
+  if (conectandoAgora) return;
+  conectandoAgora = true;
+  usuarioDesconectou = false;
+  setBotaoConectar(true);
+  $('wa-feedback').textContent = auto
+    ? 'Conectando automaticamente… o QR Code aparece aqui sozinho.'
+    : 'Iniciando a sessão… o QR Code pode levar alguns segundos.';
   try {
     const r = await window.api.connectSession();
     $('wa-feedback').textContent = r?.message || '';
   } catch (e) {
     $('wa-feedback').textContent = `Erro: ${e.message}`;
+  } finally {
+    conectandoAgora = false;
+    setBotaoConectar(false);
   }
   pollSessao(true);
 }
 
+function talvezAutoConectar() {
+  if (autoConectouNesteBoot || usuarioDesconectou || conectandoAgora) return;
+  const o = overview;
+  if (!o?.configured || o.modoIntegracao !== 'local') return;
+  if (!o.supervisor?.saudavel) return;
+  if (o.progress?.active) return;
+  if (sessao.status !== 'desconectada') return;
+  autoConectouNesteBoot = true;
+  conectar(true);
+}
+
 async function desconectar() {
+  if (sessao.status !== 'conectada' && sessao.status !== 'aguardando_qr' && sessao.status !== 'iniciando') {
+    $('wa-feedback').textContent = 'Não havia sessão ativa para desconectar.';
+    return;
+  }
   const certeza = confirm('Desconectar o WhatsApp deste computador?\n\nO envio para até você conectar de novo (vai precisar escanear o QR Code outra vez).');
   if (!certeza) return;
+  usuarioDesconectou = true;
   $('wa-feedback').textContent = 'Desconectando…';
+  const b = $('btn-desconectar');
+  b.disabled = true;
   try {
     await window.api.deleteSession();
     $('wa-feedback').textContent = 'Sessão encerrada. Clique em Conectar quando quiser voltar.';
   } catch (e) {
     $('wa-feedback').textContent = `Erro: ${e.message}`;
+  } finally {
+    b.disabled = false;
   }
   pollSessao(true);
 }
