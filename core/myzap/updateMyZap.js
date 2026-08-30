@@ -19,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const Store = require('electron-store');
 const { info, warn, error: logError } = require('./myzapLogger');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
@@ -48,6 +49,20 @@ const KEEP_IN_PLACE = new Set([...PRESERVE_ENTRIES, 'node_modules']);
 
 function getErrorMessage(err) {
     return err && err.message ? err.message : String(err);
+}
+
+/**
+ * SHA-1 do arquivo, ou '' se nao existir/nao der pra ler. Usado para comparar
+ * lockfiles (dois '' => iguais => nao roda install a toa). Era chamado sem
+ * existir — todo update in-place estourava ReferenceError apos ja ter
+ * sobrescrito o codigo (v2.0.8..v2.2.0).
+ */
+function hashFileSafe(filePath) {
+    try {
+        return crypto.createHash('sha1').update(fs.readFileSync(filePath)).digest('hex');
+    } catch (_e) {
+        return '';
+    }
 }
 
 function rmrfSafe(targetPath) {

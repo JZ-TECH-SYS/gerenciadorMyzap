@@ -1,67 +1,46 @@
+/**
+ * Bandeja MINIMALISTA (v3). A regra: a bandeja abre o painel e resolve as 2
+ * urgencias reais (pausar envio, buscar atualizacao); todo o resto vive na
+ * janela unica — os 10 itens antigos eram cicatrizes de bugs ja corrigidos.
+ */
+
 const { Menu, Tray, Notification, nativeImage } = require('electron');
 
 let trayInstance = null;
 let actions = null;
-let getMyzapStatus = () => false;
+let isEnvioAtivo = () => true;
 let appVersion = '?.?.?';
 let trayIconPath = null;
 
-function buildMenuTemplate(myzapAtivo, callbacks) {
-  const {
-    createSettings,
-    toggleMyzap,
-    updateMyZapNow,
-    repararMyZapAgora,
-    createPainelMyZap,
-    createFilaMyZap,
-    openLogViewer,
-    abrirPastaLogs,
-    checkUpdates
-  } = callbacks;
+function buildMenuTemplate(envioAtivo, callbacks) {
+  const { openPanel, toggleEnvio, checkAllUpdates } = callbacks;
 
   return [
-    { label: '📱  Gerenciador MyZap', enabled: false },
-    { label: `      v${appVersion}`, enabled: false },
+    { label: `Gerenciador MyZap  v${appVersion}`, enabled: false },
     { type: 'separator' },
-    { label: '── MyZap ──', enabled: false },
+    { label: 'Abrir painel', click: () => openPanel?.() },
     {
-      label: myzapAtivo ? '🟢  MyZap ativo' : '🔴  MyZap pausado',
-      click: toggleMyzap
+      label: envioAtivo ? 'Pausar envio de mensagens' : 'Retomar envio de mensagens',
+      click: () => toggleEnvio?.()
     },
-    {
-      label: '🛠️  Reparar MyZap agora',
-      click: () => repararMyZapAgora?.(),
-      enabled: !!repararMyZapAgora
-    },
-    { label: '🔄  Atualizar MyZap agora', click: updateMyZapNow },
-    { label: '💬  Painel MyZap', click: createPainelMyZap },
-    { label: '📬  Fila de mensagens', click: createFilaMyZap },
+    { label: 'Buscar atualizacao', click: () => checkAllUpdates?.() },
     { type: 'separator' },
-    { label: '── Sistema ──', enabled: false },
-    { label: '⚙️  Configuracoes da API', click: createSettings },
-    { label: '📋  Ver logs', click: openLogViewer },
-    { label: '📁  Abrir pasta de logs', click: abrirPastaLogs },
-    {
-      label: '🔎  Verificar atualizacao',
-      click: () => checkUpdates?.(),
-      enabled: !!checkUpdates
-    },
-    { type: 'separator' },
-    { label: '🚪  Sair', role: 'quit' }
+    { label: 'Sair', role: 'quit' }
   ];
 }
 
-function init(iconPath, callbackSet, version = '?.?.?', myzapStatusState) {
+function init(iconPath, callbackSet, version = '?.?.?', envioAtivoState) {
   actions = callbackSet;
   appVersion = version;
   trayIconPath = iconPath;
 
-  if (typeof myzapStatusState === 'function') {
-    getMyzapStatus = myzapStatusState;
+  if (typeof envioAtivoState === 'function') {
+    isEnvioAtivo = envioAtivoState;
   }
 
   trayInstance = new Tray(iconPath);
   trayInstance.setToolTip(`Gerenciador MyZap  v${version}`);
+  trayInstance.on('double-click', () => actions?.openPanel?.());
   rebuildMenu();
   return trayInstance;
 }
@@ -97,7 +76,7 @@ function rebuildMenu() {
     return;
   }
 
-  const menu = Menu.buildFromTemplate(buildMenuTemplate(getMyzapStatus(), actions));
+  const menu = Menu.buildFromTemplate(buildMenuTemplate(isEnvioAtivo(), actions));
   trayInstance.setContextMenu(menu);
 }
 

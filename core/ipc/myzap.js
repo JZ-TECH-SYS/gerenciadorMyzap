@@ -28,6 +28,7 @@ const {
 } = require('../myzap/envTemplate');
 const { getStateSnapshot } = require('../myzap/stateMachine');
 const { getPrivilegeStatus, isLocalHttpServiceReachable } = require('../myzap/processUtils');
+const { resolveDataDir } = require('../myzap/enginePaths');
 const {
     getUltimosPendentesMyZap,
     startWhatsappQueueWatcher,
@@ -675,8 +676,11 @@ function registerMyZapHandlers(ipcMain) {
         try {
             const { TOKEN = '', OPENAI_API_KEY = '', EMAIL_TOKEN = '' } = secrets || {};
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
-            const localEnvPath = (myzapDir && fs.existsSync(path.join(myzapDir, '.env')))
-                ? path.join(myzapDir, '.env')
+            // v3: o .env mora no diretorio de DADOS (myzap-data ao lado do
+            // motor); no legado resolve para o proprio myzapDir.
+            const envDir = myzapDir ? resolveDataDir(myzapDir) : '';
+            const localEnvPath = (envDir && fs.existsSync(path.join(envDir, '.env')))
+                ? path.join(envDir, '.env')
                 : '';
 
             // Base: store -> .env instalado -> template gerado em codigo.
@@ -726,7 +730,7 @@ function registerMyZapHandlers(ipcMain) {
     ipcMain.handle('myzap:readEnvSecrets', async () => {
         try {
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
-            const localEnv = myzapDir ? path.join(myzapDir, '.env') : '';
+            const localEnv = myzapDir ? path.join(resolveDataDir(myzapDir), '.env') : '';
             let envContent = '';
             if (localEnv && fs.existsSync(localEnv)) {
                 envContent = fs.readFileSync(localEnv, 'utf8');

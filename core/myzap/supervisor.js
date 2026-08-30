@@ -183,6 +183,30 @@ async function executeStep(step, dir) {
     // degrau 3: reinstalacao preservando dados (sessao/banco/.env)
     info('Supervisor: degrau 3 — reinstalacao preservando dados', { metadata: { area: 'supervisor', dir } });
     try {
+        // Instalacao em modo PACK (v3): os dados ja moram FORA do motor, entao
+        // "reinstalar preservando" e simplesmente reaplicar o pack do cache
+        // local (offline, atomica, com rollback). Sem pack em cache, cai no
+        // fluxo legado abaixo.
+        // eslint-disable-next-line global-require
+        const { isPackEngine } = require('./enginePaths');
+        if (isPackEngine(dir)) {
+            // eslint-disable-next-line global-require
+            const { repairEngineFromLocalSources } = require('./enginePack');
+            const packResult = await repairEngineFromLocalSources();
+            if (packResult) {
+                if (packResult.status !== 'success') {
+                    warn('Supervisor: reparo via pack falhou', {
+                        metadata: { area: 'supervisor', packResult }
+                    });
+                    return false;
+                }
+                return confirmHealthy();
+            }
+            warn('Supervisor: instalacao em modo pack sem pack em cache; tentando fluxo legado', {
+                metadata: { area: 'supervisor', dir }
+            });
+        }
+
         // require tardio para evitar custo no boot; updateMyZap reusa o fluxo de F3
         // eslint-disable-next-line global-require
         const { reinstallPreservingData } = require('./updateMyZap');

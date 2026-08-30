@@ -1,5 +1,14 @@
 name: Build & Release
 
+# v3 (Runtime Pack):
+#   - Setup LITE (~130MB): app puro. E o UNICO no latest.yml — todo
+#     auto-update baixa so ele (antes: 530MB por release com snapshot).
+#   - Setup FULL (~380MB): LITE + MyZap Runtime Pack embutido em resources/
+#     — instalador de primeira instalacao 100% offline (pendrive/link).
+#     Gerado apenas se o canal do myzap tiver release publicada.
+#   O pack vem do canal do repo myzap (releases/latest), pinado por download
+#   no momento do build e conferido pelo manifest.
+
 on:
   push:
     branches: ['main']
@@ -27,21 +36,32 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # MyZap PRONTO dentro do instalador: codigo + node_modules + Chromium.
-      # No cliente o primeiro boot so extrai — sem rede, pnpm ou compilacao.
-      - name: Build MyZap offline snapshot
-        run: node scripts/build-myzap-snapshot.js
+      # Runtime Pack do canal do myzap -> embutido no Setup FULL.
+      # Sem release no canal ainda: segue so com o LITE (continue-on-error).
+      - name: Baixar MyZap Runtime Pack (canal)
+        id: pack
+        continue-on-error: true
+        run: |
+          gh release download -R JZ-TECH-SYS/myzap --pattern "myzap-pack-win32-x64.*" -D build/pack
+          Get-ChildItem build/pack
+          "found=true" >> $env:GITHUB_OUTPUT
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Windows (electron-builder)
+      - name: Build Setup LITE (feed do auto-update)
         run: pnpm run dist -- --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Setup FULL (offline, pack embutido)
+        if: steps.pack.outputs.found == 'true'
+        run: pnpm exec electron-builder --win --x64 --config build/full.config.js --config.directories.output=dist/full --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -53,6 +73,7 @@ jobs:
             dist/*.exe
             dist/*.blockmap
             dist/latest.yml
+            dist/full/*FULL*.exe
 
   build-linux:
     runs-on: ubuntu-latest
@@ -72,7 +93,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: pnpm
 
       - name: Install dependencies
@@ -103,7 +124,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Read version
         id: pkg
@@ -132,6 +153,7 @@ jobs:
           files: |
             dist/*.exe
             dist/latest.yml
+            dist/full/*.exe
             dist/*.AppImage
             dist/*.deb
             dist/latest-linux.yml

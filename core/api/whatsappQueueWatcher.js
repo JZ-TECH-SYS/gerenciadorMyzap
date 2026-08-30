@@ -1230,26 +1230,21 @@ async function startWhatsappQueueWatcher() {
     };
   }
 
+  // A fila SEMPRE liga. Config incompleta ou MyZap/sessao indisponiveis nao
+  // sao motivo para recusar o start: o proprio ciclo ja detecta cada caso e
+  // entra em PAUSA RECUPERAVEL (aguardando_credenciais / aguardando_myzap),
+  // retomando sozinho. O gate antigo aqui deixava a fila "morta" com um warn
+  // a cada 30s enquanto o usuario ainda nem tinha escaneado o QR.
   const config = await obterCredenciaisAtivas();
   if (!config.backendApiUrl || !config.backendApiToken || !config.sessionKey || !config.myzapApiToken) {
-    warn('[FilaMyZap] Configuracao incompleta para iniciar watcher', {
+    info('[FilaMyZap] Iniciando com configuracao incompleta — ciclo aguardara credenciais', {
       metadata: {
         backendApiUrl: !!config.backendApiUrl,
         backendApiToken: !!config.backendApiToken,
         sessionKey: !!config.sessionKey,
-        sessionName: !!config.sessionName,
         myzapApiToken: !!config.myzapApiToken
       }
     });
-    return { status: 'error', message: 'Configuracao do backend/MyZap incompleta.' };
-  }
-
-  const myzapDisponivel = await validarDisponibilidadeMyZap(config.sessionKey, config.myzapApiToken);
-  if (!myzapDisponivel) {
-    return {
-      status: 'error',
-      message: 'MyZap indisponivel. Verifique se a sessao esta ativa antes de iniciar a fila.'
-    };
   }
 
   ativo = true;

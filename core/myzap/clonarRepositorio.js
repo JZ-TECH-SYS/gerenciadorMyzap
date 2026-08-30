@@ -368,10 +368,42 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       }
     }
 
-    // Snapshot embutido primeiro: instala OFFLINE (sem rede/pnpm/scripts).
+    // Fonte PREFERIDA (v3): Runtime Pack — artefato pronto do canal de
+    // releases do myzap ou pack local (pendrive/Setup FULL/env). Instala,
+    // configura dados e SOBE o servico sozinho, com validacao de saude.
+    // skipStart e do fluxo legado de preservacao (dados dentro do motor) —
+    // nele o pack nao entra para nao misturar os dois layouts numa rodada.
     let shaInstalado = null;
     let instalou = false;
 
+    if (!options.skipStart) {
+      try {
+        // eslint-disable-next-line global-require
+        const enginePack = require('./enginePack');
+        const viaPack = await enginePack.installFromBestSourceUnlocked({
+          onProgress: reportProgress,
+          engineDir: dirPath,
+        });
+        if (viaPack && viaPack.status === 'success') {
+          return {
+            status: 'success',
+            message: `MyZap instalado do Runtime Pack e iniciado (v${viaPack.version || '?'}).`,
+          };
+        }
+        if (viaPack) {
+          warn('Instalacao via Runtime Pack falhou; caindo para snapshot/rede', {
+            metadata: { area: 'clonarRepositorio', dirPath, viaPack },
+          });
+        }
+      } catch (packErr) {
+        warn('Erro ao tentar Runtime Pack; caindo para snapshot/rede', {
+          metadata: { area: 'clonarRepositorio', dirPath, error: getErrorMessage(packErr) },
+        });
+      }
+    }
+
+    // Snapshot embutido: instala OFFLINE (sem rede/pnpm/scripts) — heranca
+    // v2, continua valendo enquanto houver Setup antigo em campo.
     if (snapshotCombina) {
       const viaSnapshot = await tentarInstalarViaSnapshot(dirPath, snapshot, reportProgress);
       if (viaSnapshot.ok) {

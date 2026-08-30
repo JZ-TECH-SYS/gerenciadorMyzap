@@ -56,17 +56,30 @@ pnpm start
 ## Gerar instalador
 
 ```bash
-# 1) monta o pacote offline do MyZap (código + deps + Chromium) — o CI faz isso sozinho
-pnpm run build:myzap-snapshot
-
-# 2) gera o instalador
+# Setup LITE (~130MB) — o que o auto-update distribui (latest.yml)
 pnpm run build
+
+# Setup FULL (offline) — LITE + MyZap Runtime Pack embutido
+# (antes: baixe o pack do canal do myzap para build/pack/)
+pnpm exec electron-builder --win --x64 --config build/full.config.js --config.directories.output=dist/full --publish never
 ```
 
-O instalador é gerado na pasta `dist/`. O passo 1 é opcional em dev: sem o
-snapshot, o instalador funciona no modo antigo (download do MyZap via internet
-no primeiro uso). No GitHub Actions o snapshot é montado automaticamente no
-runner Windows (binários nativos win32-x64 + Chromium win64 dentro do pacote).
+O motor NÃO é mais montado aqui: o **MyZap Runtime Pack** (código dieta +
+`node_modules` + Chromium + Node embutido + semente do banco por migrations)
+é publicado pelo CI do repo `myzap` a cada **tag `v*`** e consumido daqui:
+
+- em runtime, o gerenciador compara o manifest de
+  `github.com/JZ-TECH-SYS/myzap/releases/latest` e troca o motor de forma
+  **atômica com rollback** (boot + a cada 6h + botão);
+- no CI daqui, o pack é baixado e embutido no Setup FULL;
+- num pendrive, basta o `myzap-pack-win32-x64.zip` ao lado do Setup.
+
+Teste ponta a ponta local (instala do pack, atualiza preservando dados e
+prova o rollback, tudo em sandbox):
+
+```bash
+pnpm exec electron scripts/test-pack-e2e.js C:/caminho/do/myzap-pack-win32-x64.zip
+```
 
 ---
 

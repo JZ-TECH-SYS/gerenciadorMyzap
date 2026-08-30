@@ -4,6 +4,7 @@ const Store = require('electron-store');
 const { info, warn, error } = require('./myzapLogger');
 const { killProcessesOnPort, isPortInUse, waitForPortFree } = require('./processUtils');
 const { getDefaultMyZapDirectory } = require('./autoConfig');
+const { getDataDirFor, getPacksCacheDirFor } = require('./enginePaths');
 const { killMyZapProcess } = require('./iniciarMyZap');
 const { transition, forceTransition } = require('./stateMachine');
 const { clearProgress } = require('./progress');
@@ -24,6 +25,9 @@ function isSafeResetPath(targetPath) {
     const base = path.basename(normalized).toLowerCase();
 
     if (base === 'myzap') return true;
+    // Layout v3: irmaos do motor (myzap-data, myzap-packs) e sobras de troca
+    // (myzap.old, myzap.staging, myzap.broken) tambem sao nossos.
+    if (/^myzap([.-]|$)/.test(base)) return true;
     if (lowered.endsWith(`${path.sep}myzap`)) return true;
     if (lowered.includes(`${path.sep}myzap${path.sep}`)) return true;
     return false;
@@ -110,7 +114,16 @@ async function doResetMyZapEnvironment(options = {}) {
     const removeTools = Boolean(options.removeTools);
     const storedPath = String(store.get('myzap_diretorio') || '').trim();
     const defaultPath = getDefaultMyZapDirectory();
-    const directories = unique([storedPath, defaultPath]);
+    // Alem do motor: dados (v3), cache de packs e sobras de trocas.
+    const engineDirs = unique([storedPath, defaultPath]);
+    const directories = unique(engineDirs.flatMap((dir) => [
+        dir,
+        getDataDirFor(dir),
+        getPacksCacheDirFor(dir),
+        `${dir}.old`,
+        `${dir}.staging`,
+        `${dir}.broken`
+    ]));
 
     // Transitar para estado 'resetting'
     transition('resetting', { message: 'Resetando ambiente local do MyZap...', removeTools });
