@@ -6,7 +6,7 @@ Aplicação desktop **Electron** para gerenciamento do serviço **MyZap** — in
 
 ## Funcionalidades
 
-- **Instalação automatizada** do MyZap (download do pacote oficial via ZIP, instalação de dependências via runtime interno, configuração do `.env`) — **zero dependência externa**: não precisa de Git nem Node.js no PC do cliente
+- **Instalação 100% offline** do MyZap — o instalador já traz o MyZap **pronto para rodar** (código pinado por commit + `node_modules` instalado + Chromium): o primeiro boot apenas extrai o pacote embutido, **sem internet, sem pnpm, sem scripts e sem compilação** no PC do cliente. Não precisa de Git, Node.js nem Chrome instalados. Sem o pacote embutido (build de dev), cai automaticamente no fluxo antigo de download via ZIP
 - **Supervisor (watchdog)** — health-check do MyZap a cada 15s via `GET /health`; se travar, recupera sozinho em escada: restart → kill da árvore de processos → reinstalação preservando dados (a sessão do WhatsApp reconecta sozinha). Circuit breaker evita loop infinito de restart
 - **Conexão com auto-recuperação** — sessão que não gera QR Code (zumbi) é encerrada e reiniciada automaticamente; erros sempre visíveis no painel com botão **Forçar reconexão**
 - **Atualização do MyZap por commit** — compara o SHA da `main` no GitHub (boot + a cada 6h) e atualiza com troca atômica de diretório + rollback, preservando `.env`, banco e sessão
@@ -56,10 +56,17 @@ pnpm start
 ## Gerar instalador
 
 ```bash
+# 1) monta o pacote offline do MyZap (código + deps + Chromium) — o CI faz isso sozinho
+pnpm run build:myzap-snapshot
+
+# 2) gera o instalador
 pnpm run build
 ```
 
-O instalador é gerado na pasta `dist/`.
+O instalador é gerado na pasta `dist/`. O passo 1 é opcional em dev: sem o
+snapshot, o instalador funciona no modo antigo (download do MyZap via internet
+no primeiro uso). No GitHub Actions o snapshot é montado automaticamente no
+runner Windows (binários nativos win32-x64 + Chromium win64 dentro do pacote).
 
 ---
 
@@ -97,7 +104,8 @@ gerenciadorMyzap/
 │   │   ├── updateMyZap.js         # Troca atômica de versão com rollback
 │   │   ├── envTemplate.js         # .env gerado em código (TOKEN único por máquina)
 │   │   ├── atualizarEnv.js        # Atualiza .env e reinicia serviço
-│   │   ├── clonarRepositorio.js   # Instalação completa do MyZap
+│   │   ├── localSnapshot.js       # Instalação offline via pacote embutido no Setup
+│   │   ├── clonarRepositorio.js   # Instalação completa (snapshot 1º, rede como fallback)
 │   │   ├── iniciarMyZap.js        # Inicia serviço via pnpm (Node = shim do Electron)
 │   │   └── verificarDiretorio.js  # Verifica instalação
 │   ├── utils/

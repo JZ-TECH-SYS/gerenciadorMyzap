@@ -14,6 +14,7 @@ const { fetchRemoteMainSha, setInstalledSha } = require('./updateChecker');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
+const { getLocalSnapshotInfo, installFromLocalSnapshot, puppeteerCacheEnv } = require('./localSnapshot');
 
 // Watchdog do install: 15 min sem terminar => mata o processo (rede/registro travado).
 const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
@@ -108,6 +109,161 @@ function rodarComando(executor, args, opcoes = {}) {
   });
 }
 
+function limparDestinoSeguro(dirPath) {
+  try {
+    if (dirPath && fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    }
+    return true;
+  } catch (err) {
+    logError('Erro ao limpar diretorio do MyZap', { metadata: { err, dirPath } });
+    return false;
+  }
+}
+
+function finalizarSnapshotOk(dirPath, resultado, reportProgress) {
+  transition('installing_dependencies', {
+    message: 'Dependencias ja incluidas no pacote embutido.',
+    dirPath,
+  });
+  reportProgress('Dependencias ja incluidas no pacote embutido.', 'install_dependencies', {
+    percent: 70,
+    dirPath,
+    viaSnapshot: true,
+  });
+
+  return { ok: true, sha: resultado.sha };
+}
+
+/**
+ * Instalacao OFFLINE: extrai o snapshot embutido no instalador (codigo +
+ * node_modules pronto + Chromium). Nao usa rede, pnpm nem scripts.
+ * @returns {Promise<{ ok: boolean, sha: string|null, fatal?: object }>}
+ */
+async function tentarInstalarViaSnapshot(dirPath, snapshot, reportProgress, opts = {}) {
+  try {
+    if (opts.limparDestino && !limparDestinoSeguro(dirPath)) {
+      return { ok: false, sha: null };
+    }
+
+    transition('cloning_repo', { message: 'Extraindo pacote embutido do MyZap...', dirPath });
+    const resultado = await installFromLocalSnapshot(dirPath, {
+      snapshot,
+      onProgress: reportProgress,
+    });
+
+    return finalizarSnapshotOk(dirPath, resultado, reportProgress);
+  } catch (err) {
+    // Destino nao-vazio NAO e nosso: nada foi tocado e nada pode ser limpo
+    // (pode ser uma pasta qualquer do usuario apontada por engano). Erro
+    // fatal direto — o fluxo de rede falharia na MESMA validacao.
+    if (err && err.code === 'EDESTINO_NAO_VAZIO') {
+      transition('error', { message: err.message, dirPath });
+      return {
+        ok: false,
+        sha: null,
+        fatal: { status: 'error', message: err.message },
+      };
+    }
+
+    warn('Instalacao via snapshot falhou; caindo para o fluxo de rede', {
+      metadata: { area: 'clonarRepositorio', dirPath, error: getErrorMessage(err) },
+    });
+    // Extracao pode ter parado no meio: o destino (criado por nos) precisa
+    // voltar a ficar limpo.
+    limparDestinoSeguro(dirPath);
+    return { ok: false, sha: null };
+  }
+}
+
+/**
+ * Instalacao ONLINE (fluxo historico): baixa o ZIP pinado por SHA e roda o
+ * `pnpm install` com o runtime interno.
+ * @returns {Promise<{ ok: boolean, sha: string|null, result?: object }>}
+ */
+async function instalarViaRede(dirPath, shaAlvo, reportProgress) {
+  const pnpmRunner = await getPnpmCommand();
+  if (!pnpmRunner) {
+    return {
+      ok: false,
+      sha: null,
+      result: {
+        status: 'error',
+        message: 'Nao foi possivel carregar o instalador interno de dependencias do MyZap.',
+      },
+    };
+  }
+
+  info('Runner de dependencias selecionado para instalacao do MyZap', {
+    metadata: {
+      area: 'clonarRepositorio',
+      runnerSource: pnpmRunner.source || pnpmRunner.command,
+      dirPath,
+    },
+  });
+
+  transition('cloning_repo', { message: 'Baixando pacote do MyZap...', dirPath });
+
+  // Pina o download no commit SHA atual da main: alem de eliminar corrida
+  // com push durante o download, registra a versao instalada para o fluxo
+  // de atualizacao sem Git (updateChecker). Sem rede p/ API, baixa a main.
+  const shaParaInstalar = shaAlvo || await fetchRemoteMainSha() || '';
+
+  try {
+    await downloadRepositoryArchive(dirPath, {
+      onProgress: reportProgress,
+      sha: shaParaInstalar,
+    });
+  } catch (archiveErr) {
+    logError('Falha ao baixar o pacote do MyZap para instalacao local', {
+      metadata: {
+        area: 'clonarRepositorio',
+        dirPath,
+        error: archiveErr,
+      },
+    });
+    return {
+      ok: false,
+      sha: null,
+      result: {
+        status: 'error',
+        message: getErrorMessage(archiveErr) || 'Erro ao baixar o pacote do MyZap para instalacao local.',
+      },
+    };
+  }
+
+  transition('installing_dependencies', { message: 'Instalando dependencias do MyZap...', dirPath });
+
+  reportProgress('Instalando dependencias do MyZap...', 'install_dependencies', {
+    percent: 55,
+    dirPath,
+  });
+  // Se um Chromium embutido ja existir no destino (resgate/reuso), o
+  // postinstall do puppeteer reaproveita em vez de baixar de novo.
+  const runnerComCache = {
+    ...pnpmRunner,
+    env: { ...pnpmRunner.env, ...puppeteerCacheEnv(dirPath) },
+  };
+  const instalouDeps = await rodarComando(
+    runnerComCache,
+    ['install'],
+    { cwd: dirPath },
+  );
+
+  if (!instalouDeps) {
+    return {
+      ok: false,
+      sha: null,
+      result: {
+        status: 'error',
+        message: 'Pacote do MyZap baixado, mas houve erro ao instalar as dependencias locais.',
+      },
+    };
+  }
+
+  return { ok: true, sha: shaParaInstalar || null };
+}
+
 async function clonarRepositorio(dirPath, envContent, reinstall = false, options = {}) {
   try {
     const reportProgress = (typeof options.onProgress === 'function')
@@ -161,21 +317,27 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
 
     transition('checking_config', { message: 'Preparando instalacao automatica do MyZap...', dirPath });
 
-    const pnpmRunner = await getPnpmCommand();
-    if (!pnpmRunner) {
-      return {
-        status: 'error',
-        message: 'Nao foi possivel carregar o instalador interno de dependencias do MyZap.',
-      };
-    }
+    // Fontes de instalacao decididas ANTES de qualquer acao destrutiva.
+    // Quando o chamador pede um SHA especifico (update/reparo pinado), o
+    // snapshot so e usado direto se for EXATAMENTE aquele SHA; senao vira
+    // resgate caso a rede falhe.
+    const shaAlvo = String(options.sha || '').trim();
+    const snapshot = getLocalSnapshotInfo();
+    const snapshotCombina = Boolean(snapshot)
+      && (!shaAlvo || (snapshot.manifest.sha && snapshot.manifest.sha === shaAlvo));
+    // Registrado ANTES de qualquer mexida: um destino que ja tinha conteudo
+    // e que NAO passou pelo cleanup de reinstalacao jamais pode ser limpo
+    // pelo resgate (pode ser uma pasta do usuario apontada por engano).
+    const destinoEraVazio = !fs.existsSync(dirPath) || fs.readdirSync(dirPath).length === 0;
 
-    info('Runner de dependencias selecionado para instalacao do MyZap', {
-      metadata: {
-        area: 'clonarRepositorio',
-        runnerSource: pnpmRunner.source || pnpmRunner.command,
-        dirPath,
-      },
-    });
+    // Reinstalacao sem NENHUMA fonte garantida (nem snapshot, nem pnpm
+    // interno) nao pode apagar a instalacao atual — deixaria o cliente sem
+    // nada. Aborta sem tocar em arquivo algum.
+    if (reinstall && !snapshot && !(await getPnpmCommand())) {
+      const message = 'Nao foi possivel carregar o instalador interno de dependencias do MyZap. Reinstalacao abortada sem alterar a instalacao atual.';
+      transition('error', { message, dirPath });
+      return { status: 'error', message };
+    }
 
     if (reinstall) {
       reportProgress('Reinstalacao solicitada. Limpando instalacao anterior...', 'reinstall_cleanup', {
@@ -206,49 +368,44 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       }
     }
 
-    transition('cloning_repo', { message: 'Baixando pacote do MyZap...', dirPath });
+    // Snapshot embutido primeiro: instala OFFLINE (sem rede/pnpm/scripts).
+    let shaInstalado = null;
+    let instalou = false;
 
-    // Pina o download no commit SHA atual da main: alem de eliminar corrida
-    // com push durante o download, registra a versao instalada para o fluxo
-    // de atualizacao sem Git (updateChecker). Sem rede p/ API, baixa a main.
-    const shaParaInstalar = String(options.sha || '').trim() || await fetchRemoteMainSha() || '';
-
-    try {
-      await downloadRepositoryArchive(dirPath, {
-        onProgress: reportProgress,
-        sha: shaParaInstalar,
-      });
-    } catch (archiveErr) {
-      logError('Falha ao baixar o pacote do MyZap para instalacao local', {
-        metadata: {
-          area: 'clonarRepositorio',
-          dirPath,
-          error: archiveErr,
-        },
-      });
-      return {
-        status: 'error',
-        message: getErrorMessage(archiveErr) || 'Erro ao baixar o pacote do MyZap para instalacao local.',
-      };
+    if (snapshotCombina) {
+      const viaSnapshot = await tentarInstalarViaSnapshot(dirPath, snapshot, reportProgress);
+      if (viaSnapshot.ok) {
+        instalou = true;
+        shaInstalado = viaSnapshot.sha;
+      } else if (viaSnapshot.fatal) {
+        return viaSnapshot.fatal;
+      }
     }
 
-    transition('installing_dependencies', { message: 'Instalando dependencias do MyZap...', dirPath });
-
-    reportProgress('Instalando dependencias do MyZap...', 'install_dependencies', {
-      percent: 55,
-      dirPath,
-    });
-    const instalouDeps = await rodarComando(
-      pnpmRunner,
-      ['install'],
-      { cwd: dirPath },
-    );
-
-    if (!instalouDeps) {
-      return {
-        status: 'error',
-        message: 'Pacote do MyZap baixado, mas houve erro ao instalar as dependencias locais.',
-      };
+    if (!instalou) {
+      const viaRede = await instalarViaRede(dirPath, shaAlvo, reportProgress);
+      if (viaRede.ok) {
+        instalou = true;
+        shaInstalado = viaRede.sha;
+      } else if (snapshot && !snapshotCombina && (reinstall || destinoEraVazio)) {
+        // Resgate offline: a rede falhou e existe um snapshot de OUTRA versao.
+        // Um MyZap funcionando (atualizavel depois pelo botao) vale mais que
+        // uma instalacao morta esperando a rede voltar.
+        warn('Instalacao via rede falhou; usando snapshot embutido como resgate', {
+          metadata: { area: 'clonarRepositorio', dirPath, shaAlvo },
+        });
+        const resgate = await tentarInstalarViaSnapshot(dirPath, snapshot, reportProgress, {
+          limparDestino: true,
+        });
+        if (resgate.ok) {
+          instalou = true;
+          shaInstalado = resgate.sha;
+        } else {
+          return resgate.fatal || viaRede.result;
+        }
+      } else {
+        return viaRede.result;
+      }
     }
 
     reportProgress('Aplicando configuracoes locais (.env e banco base)...', 'sync_configs', {
@@ -267,8 +424,8 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     // skipStart: usado pela reinstalacao preservando dados — a sessao/banco
     // sao restaurados ANTES do start (senao o MyZap subiria sem a sessao).
     if (options.skipStart) {
-      if (shaParaInstalar) {
-        setInstalledSha(shaParaInstalar);
+      if (shaInstalado) {
+        setInstalledSha(shaInstalado);
       }
       reportProgress('MyZap instalado (start adiado pelo chamador).', 'installed_no_start', {
         percent: 90,
@@ -291,8 +448,8 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       return startResult;
     }
 
-    if (shaParaInstalar) {
-      setInstalledSha(shaParaInstalar);
+    if (shaInstalado) {
+      setInstalledSha(shaInstalado);
     }
 
     reportProgress('MyZap local iniciado. Finalizando ajustes...', 'start_confirmed', {

@@ -11,6 +11,7 @@ const {
   envWithNodeShim,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
+const { puppeteerCacheEnv } = require('./localSnapshot');
 
 /**
  * Instalacao apta a rodar? (index.js + dependencias instaladas)
@@ -183,8 +184,11 @@ async function iniciarMyZap(dirPath, options = {}) {
       cwd: dirPath,
       shell: false,
       // shim de `node` continua no PATH apenas para subprocessos eventuais.
+      // Chromium embutido no snapshot (se existir) fica visivel ao puppeteer —
+      // maquina sem Chrome instalado tambem consegue abrir o WhatsApp.
       env: {
         ...envWithNodeShim(process.env),
+        ...puppeteerCacheEnv(dirPath),
         ELECTRON_RUN_AS_NODE: '1',
       },
       detached: false,

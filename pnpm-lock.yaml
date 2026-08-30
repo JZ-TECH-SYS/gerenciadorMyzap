@@ -28,7 +28,7 @@ importers:
         version: 10.29.3
     devDependencies:
       electron:
-        specifier: '*'
+        specifier: 40.6.0
         version: 40.6.0
       electron-builder:
         specifier: ^24.11.0

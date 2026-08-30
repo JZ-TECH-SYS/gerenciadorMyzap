@@ -25,6 +25,7 @@ const { downloadRepositoryArchive } = require('./repositoryArchive');
 const { iniciarMyZap, stopMyZapAndFreePort, isMyZapInstallComplete } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { getPnpmCommand, isLocalHttpServiceReachable } = require('./processUtils');
+const { puppeteerCacheEnv } = require('./localSnapshot');
 const { transition } = require('./stateMachine');
 
 const store = new Store();
@@ -36,7 +37,10 @@ const PRESERVE_ENTRIES = [
     'instances',
     'tokens',
     'userDataDir',
-    '.wwebjs_cache'
+    '.wwebjs_cache',
+    // Chromium embutido do snapshot: nao e "dado", mas preserva-lo evita
+    // re-download de ~200MB quando a reinstalacao acontece pela rede.
+    '.puppeteer-cache'
 ];
 
 /** Entradas que nao sao "codigo" e ficam paradas durante o update in-place. */
@@ -70,7 +74,9 @@ async function rodarPnpmInstall(dirPath, reportProgress, label) {
 
     // eslint-disable-next-line global-require
     const clonarRepositorio = require('./clonarRepositorio');
-    const ok = await clonarRepositorio.rodarComando(pnpmRunner, ['install'], { cwd: dirPath });
+    // Chromium embutido (se presente) evita re-download no postinstall do puppeteer.
+    const runner = { ...pnpmRunner, env: { ...pnpmRunner.env, ...puppeteerCacheEnv(dirPath) } };
+    const ok = await clonarRepositorio.rodarComando(runner, ['install'], { cwd: dirPath });
     if (!ok) {
         throw new Error('Falha ao instalar dependencias do MyZap.');
     }

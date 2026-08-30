@@ -33,6 +33,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # MyZap PRONTO dentro do instalador: codigo + node_modules + Chromium.
+      # No cliente o primeiro boot so extrai — sem rede, pnpm ou compilacao.
+      - name: Build MyZap offline snapshot
+        run: node scripts/build-myzap-snapshot.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build Windows (electron-builder)
         run: pnpm run dist -- --publish never
         env:
@@ -44,6 +51,7 @@ jobs:
           name: windows-artifacts
           path: |
             dist/*.exe
+            dist/*.blockmap
             dist/latest.yml
 
   build-linux:

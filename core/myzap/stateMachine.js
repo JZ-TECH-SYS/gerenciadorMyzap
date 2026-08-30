@@ -37,7 +37,9 @@ const TRANSITIONS = {
         'idle'
     ],
     cloning_repo: ['installing_dependencies', 'error', 'resetting'],
-    installing_dependencies: ['starting_service', 'error', 'resetting'],
+    // cloning_repo tambem e alvo valido daqui: se o `pnpm install` da rede
+    // falhar, o resgate via snapshot embutido volta a "baixar/extrair".
+    installing_dependencies: ['starting_service', 'cloning_repo', 'error', 'resetting'],
     starting_service: ['running', 'error', 'resetting'],
     running: ['error', 'resetting', 'idle', 'checking_config', 'recovering'],
     recovering: ['starting_service', 'cloning_repo', 'checking_config', 'running', 'error', 'resetting'],

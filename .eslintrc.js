@@ -12,7 +12,9 @@ module.exports = {
     SharedArrayBuffer: 'readonly',
   },
   parserOptions: {
-    ecmaVersion: 2018,
+    // 2022: o codigo usa optional chaining (?.) e nullish coalescing (??);
+    // com 2018 o parser quebrava e o lint ficava inutilizavel no repo todo.
+    ecmaVersion: 2022,
   },
   rules: {
   },

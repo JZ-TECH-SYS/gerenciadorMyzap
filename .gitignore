@@ -14,3 +14,10 @@ tmpclaude-*
 core/myzap/configs/.env
 core/myzap/configs/db.sqlite
 core/myzap/database/
+
+# knowledge graph do graphify (local, reconstruível)
+graphify-out/
+
+# snapshot offline do MyZap (gerado por scripts/build-myzap-snapshot.js; pesado)
+build/snapshot/*
+!build/snapshot/.gitkeep

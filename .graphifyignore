@@ -1,0 +1,9 @@
+vendor
+
+# libs front-end de terceiros / minificados (graphify-always)
+*.min.js
+*.min.css
+bootstrap*.js
+jquery*.js
+sweetalert*.js
+libs/
