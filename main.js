@@ -776,6 +776,13 @@ function scheduleQueueAutoStart() {
     return;
   }
 
+  // Fila ja rodando: nada a agendar. (Sem isto, o refresh de config a cada
+  // 30s recriava o timer e logava "iniciado automaticamente" em loop.)
+  if (getWhatsappQueueWatcherStatus().ativo) {
+    clearQueueAutoStartTimer();
+    return;
+  }
+
   if (queueAutoStartTimer) {
     return;
   }
