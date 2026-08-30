@@ -646,8 +646,27 @@ async function autoStartMyZap() {
       });
     } else if (result.status === 'success') {
       toast('Servico MyZap iniciado automaticamente');
+      // WhatsApp precisa de gente quando NAO esta conectado (QR e fisico):
+      // abre o painel sozinho na aba certa — o renderer dispara a conexao e
+      // o QR aparece sem nenhum clique. Conectado, o app fica quieto na
+      // bandeja como sempre.
+      setTimeout(async () => {
+        try {
+          const verifyRealStatus = require('./core/myzap/api/verifyRealStatus');
+          const { parseSessionPayload } = require('./core/myzap/api/sessionSnapshotParser');
+          const parsed = parseSessionPayload(await verifyRealStatus());
+          if (!parsed.isConnected) {
+            createAppWindow('whatsapp');
+          }
+        } catch (_e) {
+          createAppWindow('whatsapp');
+        }
+      }, 8000);
     } else {
       myzapError('MyZap: falha no fluxo automatico de start', { metadata: { result } });
+      // Falha no start automatico tambem e caso de mostrar o painel: o
+      // semaforo explica o problema e oferece a acao.
+      createAppWindow();
     }
 
     applyMyZapRuntimeByMode('auto_start');
