@@ -232,31 +232,112 @@ async function downloadPackFromChannel(manifest, engineDir, reportProgress) {
  * vez (entradas saem de DENTRO do motor para myzap-data\ via rename).
  * Deve rodar com o serviço PARADO.
  */
-function ensureDataDirReady(engineDir, options = {}) {
-    const dataDir = getDataDirFor(engineDir);
-    fs.mkdirSync(dataDir, { recursive: true });
+function sleep(ms) {
+    return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
 
-    // 1) migração do legado (dados dentro da pasta do motor)
-    for (const entry of DATA_ENTRIES) {
+/**
+ * Move com RETRY: no Windows, o Chrome/sqlite recém-mortos soltam os file
+ * locks com 1-3s de atraso — um EPERM/EACCES imediato não é falha
+ * definitiva. (Caso real: a migração de instances\ falhava ~1s depois do
+ * kill e abortava a troca de motor inteira.)
+ */
+async function moverComRetry(origem, destino, tentativas = 4, esperaMs = 1500) {
+    for (let i = 1; i <= tentativas; i += 1) {
+        try {
+            fs.renameSync(origem, destino);
+            return true;
+        } catch (err) {
+            if (i === tentativas) {
+                // último recurso: cópia + remoção da origem
+                try {
+                    fs.cpSync(origem, destino, { recursive: true, force: true });
+                    fs.rmSync(origem, { recursive: true, force: true });
+                    return !fs.existsSync(origem);
+                } catch (_copyErr) {
+                    return false;
+                }
+            }
+            opLock.touch();
+            await sleep(esperaMs);
+        }
+    }
+    return false;
+}
+
+async function renameComRetry(origem, destino, tentativas = 4, esperaMs = 1500) {
+    let lastErr = null;
+    for (let i = 1; i <= tentativas; i += 1) {
+        try {
+            fs.renameSync(origem, destino);
+            return;
+        } catch (err) {
+            lastErr = err;
+            opLock.touch();
+            await sleep(esperaMs);
+        }
+    }
+    throw lastErr;
+}
+
+/**
+ * Migra os dados do layout legado para o dataDir — TUDO OU NADA: se qualquer
+ * entrada não conseguir sair do motor (lock persistente), TUDO que já foi
+ * movido volta para o lugar, para o motor legado continuar INTEIRO e
+ * religável. instances\ (a mais travável e a mais crítica — é a autenticação
+ * do WhatsApp) vai primeiro.
+ */
+async function migrarDadosLegados(engineDir, dataDir) {
+    const ordem = ['instances', ...DATA_ENTRIES.filter((e) => e !== 'instances')];
+    const migradas = [];
+
+    for (const entry of ordem) {
         const origem = path.join(engineDir, entry);
         const destino = path.join(dataDir, entry);
         if (!fs.existsSync(origem) || fs.existsSync(destino)) continue;
-        try {
-            fs.renameSync(origem, destino);
+
+        const ok = await moverComRetry(origem, destino);
+        if (ok) {
+            migradas.push(entry);
             info('enginePack: dado migrado do layout legado', {
                 metadata: { area: 'enginePack', entry }
             });
-        } catch (err) {
-            // rename pode falhar entre volumes/locks — cópia como plano B
-            try {
-                fs.cpSync(origem, destino, { recursive: true, force: true });
-                rmrfSafe(origem);
-            } catch (copyErr) {
-                warn('enginePack: falha ao migrar dado do legado', {
-                    metadata: { area: 'enginePack', entry, error: getErrorMessage(copyErr) }
+            continue;
+        }
+
+        warn('enginePack: migracao abortada — dado em uso; devolvendo o que ja foi movido', {
+            metadata: { area: 'enginePack', entryTravada: entry, migradas }
+        });
+        for (const done of [...migradas].reverse()) {
+            // eslint-disable-next-line no-await-in-loop
+            const voltou = await moverComRetry(path.join(dataDir, done), path.join(engineDir, done));
+            if (!voltou) {
+                warn('enginePack: falha ao devolver dado na desmigracao', {
+                    metadata: { area: 'enginePack', entry: done }
                 });
             }
         }
+        return { ok: false, entryTravada: entry };
+    }
+
+    return { ok: true, migradas };
+}
+
+async function ensureDataDirReady(engineDir, options = {}) {
+    const dataDir = getDataDirFor(engineDir);
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    // 1) migração do legado (dados dentro da pasta do motor) — atômica
+    const mig = await migrarDadosLegados(engineDir, dataDir);
+    if (!mig.ok) {
+        if (options.strictMigration) {
+            const err = new Error(`Dados do MyZap em uso (${mig.entryTravada}) — troca adiada; o motor atual continua no ar.`);
+            err.code = 'EMIGRACAO_TRAVADA';
+            throw err;
+        }
+        warn('enginePack: migracao de dados legados incompleta (seguindo sem strict)', {
+            metadata: { area: 'enginePack', entryTravada: mig.entryTravada }
+        });
     }
 
     // 2) .env: se ainda não existe, nasce do store/template
@@ -384,21 +465,25 @@ async function applyPackZip(zipPath, options = {}) {
             throw new Error('Porta 5555 nao liberou para aplicar a atualizacao.');
         }
 
-        // 3) dados para fora do motor ANTES da troca (uma única vez, legado)
-        ensureDataDirReady(engineDir, { silent: true });
+        // 3) dados para fora do motor ANTES da troca (uma única vez, legado).
+        // STRICT: se um dado estiver travado (lock residual do Chrome/sqlite
+        // recém-mortos), a migração desfaz o que moveu e ABORTA a troca — o
+        // motor legado fica inteiro e religável; tentamos no próximo ciclo.
+        await ensureDataDirReady(engineDir, { silent: true, strictMigration: true });
 
         // 4) troca atômica por rename (mesmo volume): o motor antigo INTEIRO
-        // vira .old — é o rollback pronto, sem cópia
+        // vira .old — é o rollback pronto, sem cópia. Com retry: EPERM logo
+        // após kill de processos é transitório no Windows.
         reportProgress('Aplicando nova versao...', 'pack_swap', { percent: 70 });
         rmrfSafe(old);
         const haviaMotorAntigo = fs.existsSync(engineDir);
         if (haviaMotorAntigo) {
-            fs.renameSync(engineDir, old);
+            await renameComRetry(engineDir, old);
         }
-        fs.renameSync(staging, engineDir);
+        await renameComRetry(staging, engineDir);
 
         // semente/caches do pack novo para o data dir (se faltarem)
-        ensureDataDirReady(engineDir, { silent: true });
+        await ensureDataDirReady(engineDir, { silent: true });
 
         // 5) subir e confirmar saúde
         reportProgress('Iniciando nova versao do MyZap...', 'pack_start', { percent: 85 });
@@ -424,8 +509,12 @@ async function applyPackZip(zipPath, options = {}) {
         };
     } catch (err) {
         logError('enginePack: falha ao aplicar pack', {
-            metadata: { area: 'enginePack', zipPath, error: getErrorMessage(err) }
+            metadata: { area: 'enginePack', zipPath, code: err?.code || null, error: getErrorMessage(err) }
         });
+
+        // Migração travada = abortamos ANTES de tocar no motor: só religar o
+        // legado (a desmigração já devolveu os dados) e tentar depois.
+        const migracaoTravada = err?.code === 'EMIGRACAO_TRAVADA';
 
         // ROLLBACK: devolve o motor antigo pelo mesmo rename e religa.
         let rolledBack = false;
@@ -437,9 +526,9 @@ async function applyPackZip(zipPath, options = {}) {
                 const broken = `${engineDir}.broken`;
                 rmrfSafe(broken);
                 if (fs.existsSync(engineDir)) {
-                    fs.renameSync(engineDir, broken);
+                    await renameComRetry(engineDir, broken);
                 }
-                fs.renameSync(old, engineDir);
+                await renameComRetry(old, engineDir);
                 rolledBack = true;
                 rmrfSafe(broken);
             }
@@ -456,7 +545,10 @@ async function applyPackZip(zipPath, options = {}) {
         return {
             status: 'error',
             rolledBack,
-            message: `Falha ao atualizar o MyZap: ${getErrorMessage(err)}.${rolledBack ? ' A versao anterior foi restaurada.' : ''}`
+            adiadoPorDadosEmUso: migracaoTravada,
+            message: migracaoTravada
+                ? `${getErrorMessage(err)} Nova tentativa no proximo ciclo automatico.`
+                : `Falha ao atualizar o MyZap: ${getErrorMessage(err)}.${rolledBack ? ' A versao anterior foi restaurada.' : ''}`
         };
     }
 }
