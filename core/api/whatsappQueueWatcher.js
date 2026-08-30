@@ -1245,7 +1245,9 @@ async function startWhatsappQueueWatcher() {
   }
 
   const myzapDisponivel = await validarDisponibilidadeMyZap(config.sessionKey, config.myzapApiToken);
-  if (!myzapDisponivel) {
+  // .disponivel de verdade: a funcao retorna um objeto (sempre truthy) — o
+  // teste antigo `!myzapDisponivel` nunca falhava e o start prosseguia cego.
+  if (!myzapDisponivel.disponivel) {
     return {
       status: 'error',
       message: 'MyZap indisponivel. Verifique se a sessao esta ativa antes de iniciar a fila.'

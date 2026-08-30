@@ -69,7 +69,9 @@ function getOrCreateLocalToken(store, installedDirPath = '') {
 function buildEnvContent(params = {}) {
     const token = String(params.token || '').trim();
     const openaiKey = String(params.openaiKey || '').trim();
-    const promptId = String(params.promptId || '').trim();
+    // params.promptId continua aceito por compatibilidade, mas nao vai mais ao
+    // .env: a variavel POMPT nunca foi lida pelo MyZap (o prompt de IA e
+    // sincronizado via API /admin/ia-manager, nao via .env).
     const emailToken = String(params.emailToken || '').trim();
 
     if (!token) {
@@ -92,11 +94,10 @@ function buildEnvContent(params = {}) {
         '',
         '# Token de protecao da API local (unico por maquina)',
         `TOKEN="${token}"`,
+        '# EMAIL e a chave que liga as sessoes ao usuario dono no banco do MyZap — nao mude',
         'EMAIL="jz.tech.digital@gmail.com"',
         `OPENAI_API_KEY="${openaiKey}"`,
         'OPENAI_MODEL="gpt-4o-mini"',
-        '',
-        `POMPT='${promptId}'`,
         '',
         '# Version of API',
         'VERSION="latest"',
@@ -104,11 +105,6 @@ function buildEnvContent(params = {}) {
         '# Version of WhatsApp',
         '# https://wppconnect.io/pt-BR/whatsapp-versions/',
         'WHATSAPP_VERSION="2.3000.1017155554"',
-        '',
-        'DIVULGAWHATS_TOKEN=""',
-        '',
-        '# Use chromium of default',
-        'USE_CHROME=true',
         '',
         '# DEBUG_SQL=true para mostrar queries do banco no console',
         'DEBUG_SQL=false',
@@ -131,9 +127,6 @@ function buildEnvContent(params = {}) {
         'CORS_ORIGIN="*"',
         'TIME_TYPING=800',
         '',
-        '# Configuracoes de Timeout para evitar erros de Runtime.callFunctionOn',
-        'PROTOCOL_TIMEOUT=60000',
-        'OPERATION_TIMEOUT=30000',
         `JWT_SECRET=${crypto.createHash('sha256').update(`jwt:${token}`).digest('hex')}`,
         '',
         '# Desabilita autenticacao 2FA do painel local (comportamento atual)',
@@ -146,9 +139,10 @@ function buildEnvContent(params = {}) {
         'SESSION_KEEPALIVE_INTERVAL_MS=300000',
         'SESSION_KEEPALIVE_ONLY_CONNECTED=true',
         '',
-        '# email config',
-        'EMAIL_DESTINATION="jv.zyzz.legado@gmail.com"',
-        'EMAIL_CC="zehenrique0822@gmail.com"',
+        '# Alertas por e-mail: destinatarios vazios = alertas desligados nesta maquina',
+        '# (o MyZap degrada sem erro quando EMAIL_TOKEN/EMAIL_DESTINATION faltam)',
+        'EMAIL_DESTINATION=""',
+        'EMAIL_CC=""',
         '',
         'EMAIL_SERVICE="https://api-mail.jztech.com.br/public/"',
         `EMAIL_TOKEN="${emailToken}"`,

@@ -380,7 +380,23 @@ function toggleMyzap() {
 }
 
 function handleUpdateCheck() {
+  // Busca MANUAL (botao/tray): com toasts de progresso e de "nada novo".
+  checkForUpdates(autoUpdater, { toast, warn }, { manual: true });
+}
+
+let appUpdateCheckTimer = null;
+const APP_UPDATE_CHECK_INTERVAL_MS = 45 * 60 * 1000;
+
+// O app vive semanas na bandeja: checar update SO no boot deixava clientes
+// para tras. Agora: boot + a cada 45min, sempre silencioso (toast so quando
+// ha update de verdade — o proprio evento update-available cuida disso).
+function scheduleAppUpdateChecks() {
   checkForUpdates(autoUpdater, { toast, warn });
+
+  if (appUpdateCheckTimer) return;
+  appUpdateCheckTimer = setInterval(() => {
+    checkForUpdates(autoUpdater, { toast, warn });
+  }, APP_UPDATE_CHECK_INTERVAL_MS);
 }
 
 let reparoManualEmAndamento = false;
@@ -784,7 +800,7 @@ if (!hasSingleInstanceLock) {
 
     scheduleMyZapConfigRefresh();
     scheduleMyZapCodeUpdateCheck();
-    handleUpdateCheck();
+    scheduleAppUpdateChecks();
   });
 
   app.on('window-all-closed', (e) => e.preventDefault());
@@ -793,6 +809,11 @@ if (!hasSingleInstanceLock) {
     if (myzapConfigRefreshTimer) {
       clearInterval(myzapConfigRefreshTimer);
       myzapConfigRefreshTimer = null;
+    }
+
+    if (appUpdateCheckTimer) {
+      clearInterval(appUpdateCheckTimer);
+      appUpdateCheckTimer = null;
     }
 
     myzapCodeUpdateTimer = null;
