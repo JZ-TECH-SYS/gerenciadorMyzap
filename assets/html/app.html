@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gerenciador MyZap</title>
+  <link rel="stylesheet" href="../css/bootstrap5.0.2.min.css">
+  <link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="../icon.png" alt="" width="26" height="26">
+      <span>Gerenciador MyZap</span>
+      <span id="top-versao" class="versao"></span>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="inicio">Início</button>
+      <button class="tab" data-tab="whatsapp">WhatsApp</button>
+      <button class="tab" data-tab="mensagens">Mensagens</button>
+      <button class="tab" data-tab="config">Configurações</button>
+      <button class="tab" data-tab="ajuda">Ajuda</button>
+    </nav>
+    <div id="chip-sessao" class="chip chip-neutro">verificando…</div>
+  </header>
+
+  <main>
+    <!-- ══ INÍCIO — semáforo ══ -->
+    <section class="pane active" id="pane-inicio">
+      <div id="semaforo" class="semaforo nivel-neutro">
+        <div class="farol" id="farol"></div>
+        <div class="semaforo-texto">
+          <h1 id="sem-titulo">Verificando o sistema…</h1>
+          <p id="sem-explicacao">Aguarde um instante.</p>
+        </div>
+        <button id="sem-acao" class="btn btn-primary btn-lg d-none"></button>
+      </div>
+
+      <div class="cards">
+        <div class="cardzinho">
+          <div class="cardzinho-topo"><span class="dot" id="dot-servico"></span> Serviço local</div>
+          <div class="cardzinho-valor" id="card-servico">—</div>
+          <div class="cardzinho-sub" id="card-servico-sub"></div>
+        </div>
+        <div class="cardzinho">
+          <div class="cardzinho-topo"><span class="dot" id="dot-whats"></span> WhatsApp</div>
+          <div class="cardzinho-valor" id="card-whats">—</div>
+          <div class="cardzinho-sub" id="card-whats-sub"></div>
+        </div>
+        <div class="cardzinho">
+          <div class="cardzinho-topo"><span class="dot" id="dot-envio"></span> Envio de mensagens</div>
+          <div class="cardzinho-valor" id="card-envio">—</div>
+          <div class="cardzinho-sub" id="card-envio-sub"></div>
+        </div>
+        <div class="cardzinho">
+          <div class="cardzinho-topo"><span class="dot dot-info"></span> Versões</div>
+          <div class="cardzinho-valor" id="card-versoes">—</div>
+          <div class="cardzinho-sub" id="card-versoes-sub"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ WHATSAPP ══ -->
+    <section class="pane" id="pane-whatsapp">
+      <div class="duas-colunas">
+        <div class="bloco">
+          <h2>Conexão do WhatsApp</h2>
+          <p class="muted">Estado atual: <b id="wa-estado">verificando…</b></p>
+          <div id="qr-area" class="qr-area">
+            <div class="qr-placeholder" id="qr-placeholder">Clique em <b>Conectar</b> para gerar o QR Code.</div>
+            <img id="qr-img" class="d-none" alt="QR Code para conectar o WhatsApp">
+          </div>
+          <p class="muted" id="wa-dica">Abra o WhatsApp no celular → Aparelhos conectados → Conectar aparelho.</p>
+        </div>
+        <div class="bloco">
+          <h2>Ações</h2>
+          <div class="botoes-coluna">
+            <button id="btn-conectar" class="btn btn-success">Conectar</button>
+            <button id="btn-desconectar" class="btn btn-outline-danger">Desconectar WhatsApp</button>
+            <button id="btn-teste-mim" class="btn btn-outline-info">Enviar mensagem de teste para mim</button>
+            <button id="btn-reconectar" class="btn btn-outline-warning">Forçar reconexão</button>
+          </div>
+          <p class="muted mt-3" id="wa-feedback"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ MENSAGENS ══ -->
+    <section class="pane" id="pane-mensagens">
+      <div class="bloco">
+        <div class="linha-entre">
+          <h2>Envio automático</h2>
+          <label class="switch">
+            <input type="checkbox" id="sw-envio">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <p class="muted" id="fila-resumo">—</p>
+        <div id="fila-alerta" class="alerta d-none"></div>
+      </div>
+      <div class="bloco">
+        <div class="linha-entre">
+          <h2>Fila de mensagens</h2>
+          <button id="btn-cancelar-pendentes" class="btn btn-sm btn-outline-danger">Cancelar todas as pendentes</button>
+        </div>
+        <div class="tabela-scroll">
+          <table class="table table-sm table-dark mb-0" id="tab-pendentes">
+            <thead><tr><th>#</th><th>Empresa</th><th>Status</th><th>Conteúdo</th></tr></thead>
+            <tbody><tr><td colspan="4" class="muted">Sem mensagens na fila agora.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ CONFIGURAÇÕES ══ -->
+    <section class="pane" id="pane-config">
+      <div class="duas-colunas">
+        <div class="bloco">
+          <h2>Conexão com o sistema</h2>
+          <p class="muted">Os 3 dados que ligam este computador à sua conta. O resto é automático.</p>
+          <form id="form-config">
+            <label class="form-label" for="cfg-idempresa">Código da empresa</label>
+            <input class="form-control" id="cfg-idempresa" required>
+            <label class="form-label mt-2" for="cfg-apiurl">Endereço do sistema (URL da API)</label>
+            <input class="form-control" id="cfg-apiurl" placeholder="https://..." required>
+            <label class="form-label mt-2" for="cfg-apitoken">Token de acesso</label>
+            <input class="form-control" id="cfg-apitoken" type="password" required>
+            <button class="btn btn-success mt-3" type="submit">Salvar e conectar</button>
+            <span class="muted ms-2" id="cfg-feedback"></span>
+          </form>
+        </div>
+        <div class="bloco">
+          <h2>Resposta automática</h2>
+          <p class="muted">Mensagem enviada quando um cliente escreve e a IA está desligada.</p>
+          <textarea class="form-control" id="cfg-msg-padrao" rows="4" placeholder="Ex.: Recebemos sua mensagem! Em instantes alguém te atende."></textarea>
+          <button id="btn-salvar-msg" class="btn btn-primary mt-2">Salvar mensagem</button>
+          <span class="muted ms-2" id="msg-feedback"></span>
+
+          <hr>
+          <h2>Atualizações</h2>
+          <p class="muted" id="upd-estado">—</p>
+          <button id="btn-buscar-updates" class="btn btn-outline-info">Buscar atualização (app + MyZap)</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ AJUDA ══ -->
+    <section class="pane" id="pane-ajuda">
+      <div class="duas-colunas">
+        <div class="bloco">
+          <h2>Suporte</h2>
+          <p class="muted">Falando com o suporte? Clique abaixo e cole a informação na conversa — isso conta tudo o que precisamos saber.</p>
+          <button id="btn-diagnostico" class="btn btn-primary">Copiar informações para o suporte</button>
+          <span class="muted ms-2" id="diag-feedback"></span>
+
+          <h2 class="mt-4">Perguntas frequentes</h2>
+          <details><summary>O WhatsApp caiu, e agora?</summary><p class="muted">O sistema reconecta sozinho na maioria dos casos. Se ficar mais de 5 minutos fora, vá na aba WhatsApp e clique em Conectar (pode pedir um novo QR Code).</p></details>
+          <details><summary>As mensagens não estão saindo.</summary><p class="muted">Veja a aba Mensagens: se aparecer um aviso amarelo, o próprio sistema explica o motivo e retoma sozinho. Envio fora da janela de horário ou acima do teto diário fica aguardando de propósito.</p></details>
+          <details><summary>Preciso deixar o computador ligado?</summary><p class="muted">Sim — o envio acontece neste computador. O aplicativo inicia sozinho com o Windows e fica na bandeja, perto do relógio.</p></details>
+          <details><summary>Como atualizo o sistema?</summary><p class="muted">Sozinho: o app busca atualização a cada 45 minutos e o MyZap a cada 6 horas. O botão em Configurações força a busca na hora.</p></details>
+        </div>
+        <div class="bloco">
+          <div class="linha-entre">
+            <h2>Opções avançadas (técnico)</h2>
+            <label class="switch"><input type="checkbox" id="sw-tecnico"><span class="slider"></span></label>
+          </div>
+          <div id="area-tecnica" class="d-none">
+            <div class="botoes-coluna">
+              <button id="btn-reparar" class="btn btn-warning">Reparar MyZap agora</button>
+              <button id="btn-ver-logs" class="btn btn-outline-secondary">Ver registros (logs)</button>
+              <button id="btn-pasta-logs" class="btn btn-outline-secondary">Abrir pasta de logs</button>
+              <button id="btn-reset" class="btn btn-outline-danger">Reset geral (apaga instalação local)</button>
+            </div>
+            <p class="muted mt-2">O reparo reinicia o serviço e, se preciso, reinstala preservando a sessão do WhatsApp. O reset apaga tudo (pede confirmação dupla).</p>
+            <p class="muted" id="tec-feedback"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="../js/app.js"></script>
+</body>
+</html>

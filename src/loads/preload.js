@@ -38,5 +38,15 @@ contextBridge.exposeInMainWorld('api', {
   sendTestMessage: (number, text) => ipcRenderer.invoke('myzap:sendTestMessage', number, text),
   testConnection: () => ipcRenderer.invoke('myzap:testConnection'),
   sendSelfTest: () => ipcRenderer.invoke('myzap:sendSelfTest'),
-  cancelarPendentesBackend: () => ipcRenderer.invoke('myzap:cancelarPendentesBackend')
+  cancelarPendentesBackend: () => ipcRenderer.invoke('myzap:cancelarPendentesBackend'),
+
+  // ── Janela unica (v3) ──
+  getOverview: () => ipcRenderer.invoke('app:getOverview'),
+  toggleEnvio: () => ipcRenderer.invoke('app:toggleEnvio'),
+  checkAllUpdates: () => ipcRenderer.invoke('app:checkAllUpdates'),
+  openLogViewer: () => ipcRenderer.invoke('app:openLogViewer'),
+  openLogsFolder: () => ipcRenderer.invoke('app:openLogsFolder'),
+  getDiagnostics: () => ipcRenderer.invoke('app:getDiagnostics'),
+  setMensagemPadrao: (texto) => ipcRenderer.invoke('app:setMensagemPadrao', texto),
+  onGotoTab: (fn) => ipcRenderer.on('app:goto-tab', (_e, tab) => fn(tab))
 });

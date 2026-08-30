@@ -11,6 +11,17 @@ const INSTALL_DEADLINE_MS = 10 * 60 * 1000;
 // Checagens periodicas silenciosas nao devem gerar toast de "nada novo"/"erro".
 let lastCheckWasManual = false;
 
+// Fase do updater VISIVEL para a UI (padrao do gerenciador wuzapi): a tela
+// mostra "buscando/baixando (x%)/pronto para reiniciar" em vez de silencio.
+// phases: idle | checking | downloading | downloaded | up_to_date | error | dev
+let updaterStatus = { phase: 'idle', percent: 0, detail: '', at: Date.now() };
+function setUpdaterStatus(phase, extra = {}) {
+  updaterStatus = { phase, percent: 0, detail: '', ...extra, at: Date.now() };
+}
+function getUpdaterStatus() {
+  return { ...updaterStatus };
+}
+
 function attachAutoUpdaterHandlers(autoUpdater, callbacks = {}) {
   const { toast, getQueueStatus } = callbacks;
   let installScheduled = false;
@@ -22,12 +33,25 @@ function attachAutoUpdaterHandlers(autoUpdater, callbacks = {}) {
   autoUpdater.autoInstallOnAppQuit = true;
   log.info('AutoUpdater logger configurado');
 
-  autoUpdater.on('update-available', () => {
+  autoUpdater.on('checking-for-update', () => {
+    setUpdaterStatus('checking');
+  });
+
+  autoUpdater.on('update-available', (infoEv) => {
+    setUpdaterStatus('downloading', { detail: infoEv?.version || '' });
     toast?.('Atualização encontrada, baixando agora...');
     info('AutoUpdater encontrou nova versão', { metadata: { action: 'update-available' } });
   });
 
+  autoUpdater.on('download-progress', (p) => {
+    setUpdaterStatus('downloading', {
+      percent: Math.round(p?.percent || 0),
+      detail: updaterStatus.detail
+    });
+  });
+
   autoUpdater.on('update-not-available', () => {
+    setUpdaterStatus('up_to_date');
     if (lastCheckWasManual) {
       toast?.('Nenhuma atualização disponível no momento.');
     }
@@ -35,6 +59,7 @@ function attachAutoUpdaterHandlers(autoUpdater, callbacks = {}) {
   });
 
   autoUpdater.on('error', (err) => {
+    setUpdaterStatus('error', { detail: err?.message || String(err) });
     error('AutoUpdater falhou', { metadata: { error: err } });
     if (lastCheckWasManual) {
       toast?.('Erro ao buscar atualizações.');
@@ -42,6 +67,7 @@ function attachAutoUpdaterHandlers(autoUpdater, callbacks = {}) {
   });
 
   autoUpdater.on('update-downloaded', () => {
+    setUpdaterStatus('downloaded', { detail: updaterStatus.detail });
     info('Atualização baixada e aguardando instalação', {
       metadata: { action: 'update-downloaded' }
     });
@@ -100,6 +126,7 @@ function checkForUpdates(autoUpdater, callbacks = {}, options = {}) {
   lastCheckWasManual = manual;
 
   if (!app.isPackaged) {
+    setUpdaterStatus('dev');
     if (manual) {
       toast?.('Atualização automática só funciona na versão instalada.');
     }
@@ -126,4 +153,4 @@ function checkForUpdates(autoUpdater, callbacks = {}, options = {}) {
   }
 }
 
-module.exports = { attachAutoUpdaterHandlers, checkForUpdates };
+module.exports = { attachAutoUpdaterHandlers, checkForUpdates, getUpdaterStatus };
