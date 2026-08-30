@@ -899,6 +899,15 @@ if (!hasSingleInstanceLock) {
   app.on('window-all-closed', (e) => e.preventDefault());
 
   app.on('before-quit', () => {
+    // Sair do gerenciador PARA o motor de proposito. Sem isto, o child do
+    // MyZap morria de EPIPE ao escrever no pipe do pai finado (sem log, sem
+    // graceful) ou ficava orfao segurando a porta. A sessao nao se perde:
+    // instances/ persiste e o proximo boot reconecta sozinho, sem QR.
+    try {
+      const { killMyZapProcess: pararMotor } = require('./core/myzap/iniciarMyZap');
+      pararMotor();
+    } catch (_e) { /* melhor esforco */ }
+
     if (myzapConfigRefreshTimer) {
       clearInterval(myzapConfigRefreshTimer);
       myzapConfigRefreshTimer = null;
