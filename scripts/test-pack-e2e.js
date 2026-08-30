@@ -107,6 +107,9 @@ app.whenReady().then(async () => {
 
         const manifest1 = readEngineManifest(engineDir);
         assert(manifest1?.version, '1. manifest instalado', JSON.stringify(manifest1 || {}));
+        if (!manifest1?.version) {
+            throw new Error('instalacao nao veio do pack (provavel fallback legado) — cenarios 2/3 nao fazem sentido');
+        }
         assert(fs.existsSync(path.join(engineDir, 'node', 'node.exe')), '1. node embutido presente');
         assert(fs.existsSync(path.join(dataDir, '.env')), '1. .env no diretorio de dados');
         assert(fs.existsSync(path.join(dataDir, 'database', 'db.sqlite')), '1. banco semente no diretorio de dados');

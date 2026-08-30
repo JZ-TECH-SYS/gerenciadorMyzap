@@ -24,6 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 const extractZip = require('extract-zip');
 const Store = require('electron-store');
 const { info, warn, error: logError } = require('./myzapLogger');
@@ -285,6 +286,35 @@ function ensureDataDirReady(engineDir, options = {}) {
 
 /* ── Troca atômica ──────────────────────────────────────────── */
 
+/**
+ * Extrai o zip do pack. No Windows usa o tar.exe NATIVO (bsdtar): o pack é
+ * gerado pelo mesmo bsdtar no CI e vem com entradas "./" que o extract-zip
+ * (yauzl) rejeita como "Out of bound path". Fora do Windows, extract-zip.
+ */
+function extractPackZip(zipPath, destDir) {
+    fs.mkdirSync(destDir, { recursive: true });
+    if (process.platform !== 'win32') {
+        return extractZip(zipPath, { dir: destDir });
+    }
+    const tarExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    return new Promise((resolve, reject) => {
+        const proc = spawn(tarExe, ['-xf', zipPath, '-C', destDir], {
+            windowsHide: true,
+            stdio: ['ignore', 'ignore', 'pipe']
+        });
+        let stderr = '';
+        proc.stderr.on('data', (d) => { stderr += String(d); });
+        proc.on('error', reject);
+        proc.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`tar.exe saiu com codigo ${code}: ${stderr.slice(0, 300)}`));
+        });
+        // Extração longa é progresso real — não deixa o opLock apodrecer.
+        const heartbeat = setInterval(() => opLock.touch(), 30000);
+        proc.on('close', () => clearInterval(heartbeat));
+    });
+}
+
 async function waitHealthy(timeoutMs) {
     // eslint-disable-next-line global-require
     const { isLocalHttpServiceReachable } = require('./processUtils');
@@ -321,8 +351,7 @@ async function applyPackZip(zipPath, options = {}) {
         // 1) extrair e validar COM O SERVIÇO NO AR — falhou aqui, nada mudou
         transition('recovering', { message: 'Preparando nova versao do MyZap...' });
         reportProgress('Extraindo nova versao do MyZap...', 'pack_extract', { percent: 45 });
-        fs.mkdirSync(staging, { recursive: true });
-        await extractZip(zipPath, { dir: staging });
+        await extractPackZip(zipPath, staging);
         opLock.touch();
 
         const stagedManifest = readEngineManifest(staging);
