@@ -2,6 +2,13 @@
 
 Aplicação desktop **Electron** para gerenciamento do serviço **MyZap** — integração WhatsApp via API local com processamento de fila de mensagens pelo ClickExpress.
 
+## Documentação
+
+- **[docs/VERSAO_SUPREMA.md](docs/VERSAO_SUPREMA.md)** — o redesign v2.3/v3: o que mudou, por quê, bugs de raiz eliminados e lições.
+- **[docs/RUNTIME_PACK.md](docs/RUNTIME_PACK.md)** — o motor como artefato: conteúdo do pack, canal por tag, troca atômica com rollback, layout `myzap\`/`myzap-data\`.
+- **[docs/OPERACAO_E_SUPORTE.md](docs/OPERACAO_E_SUPORTE.md)** — runbook: como publicar app/motor, onde estão os logs, semáforo, o que se resolve sozinho e tabela de sintomas.
+- [docs/ROTAS_MYZAP.md](docs/ROTAS_MYZAP.md) — contrato da API do backend consumido pelo app.
+
 ---
 
 ## Funcionalidades
@@ -102,36 +109,36 @@ Na aplicação, acesse **Configurações** e preencha:
 
 ```
 gerenciadorMyzap/
-├── main.js                        # Processo principal Electron
+├── main.js                        # Orquestração: boot, tray, timers, IPCs app:*
 ├── core/
 │   ├── api/
 │   │   ├── myzapStatusWatcher.js  # Envia status ao ClickExpress (10s)
-│   │   └── whatsappQueueWatcher.js # Processa fila de mensagens (30s)
-│   ├── ipc/
-│   │   └── myzap.js               # Todos os handlers IPC
+│   │   ├── whatsappQueueWatcher.js# Fila: pausas recuperáveis, ritmo humano, erro rico
+│   │   └── ritmoConfig.js         # Ritmo de envio sincronizado do backend
+│   ├── ipc/myzap.js               # Handlers IPC do domínio MyZap
 │   ├── myzap/
-│   │   ├── api/                   # Chamadas à API local MyZap (porta 5555)
-│   │   ├── supervisor.js          # Watchdog: health-check + escada de recuperação
-│   │   ├── opLock.js              # Mutex único do ciclo de vida (ensure/update/reset)
-│   │   ├── updateChecker.js       # Compara commit SHA da main (update sem Git)
-│   │   ├── updateMyZap.js         # Troca atômica de versão com rollback
+│   │   ├── enginePack.js          # v3: canal do pack, troca atômica + ROLLBACK, reparo offline
+│   │   ├── enginePaths.js         # v3: layout motor/ dados/ packs/ e detecção de modo
+│   │   ├── iniciarMyZap.js        # Spawn (node.exe do pack, cwd=myzap-data) + stop
+│   │   ├── supervisor.js          # Watchdog: health 15s + escada + circuit breaker
+│   │   ├── opLock.js              # Mutex do ciclo de vida (heartbeat + stale)
+│   │   ├── autoConfig.js          # Config remota da empresa + ensure/start
 │   │   ├── envTemplate.js         # .env gerado em código (TOKEN único por máquina)
-│   │   ├── atualizarEnv.js        # Atualiza .env e reinicia serviço
-│   │   ├── localSnapshot.js       # Instalação offline via pacote embutido no Setup
-│   │   ├── clonarRepositorio.js   # Instalação completa (snapshot 1º, rede como fallback)
-│   │   ├── iniciarMyZap.js        # Inicia serviço via pnpm (Node = shim do Electron)
-│   │   └── verificarDiretorio.js  # Verifica instalação
-│   ├── utils/
-│   │   └── logger.js              # Logger JSON Lines
-│   ├── updater.js                 # Auto-update electron-updater
-│   └── windows/                   # BrowserWindows (painel, fila, logs, tray)
-├── src/loads/
-│   ├── preload.js                 # Bridge renderer ↔ main (contextBridge)
-│   └── preloadLog.js              # Bridge para o visualizador de logs
+│   │   ├── clonarRepositorio.js   # Instalação: pack 1º; snapshot/rede = herança v2
+│   │   └── updateChecker/updateMyZap/localSnapshot  # herança v2 (fallback)
+│   ├── updater.js                 # Auto-update do app (fases visíveis p/ UI)
+│   └── windows/
+│       ├── appWindow.js           # Janela ÚNICA (semáforo + abas)
+│       └── logViewer.js · tray.js # Viewer técnico · bandeja (4 itens)
+├── scripts/
+│   ├── test-pack-e2e.js           # E2E: instala/atualiza/rollback em sandbox
+│   └── apply-pack-now.js          # Aplica um pack na instalação real (dev)
+├── build/full.config.js           # Setup FULL (pack embutido) — LITE é o build padrão
+├── src/loads/preload.js           # Bridge renderer ↔ main (contextBridge)
 └── assets/
-    ├── html/                      # painelMyZap · filaMyZap · logs
-    ├── css/                       # Estilos dark theme
-    └── js/                        # Scripts do renderer
+    ├── html/app.html · logs.html  # Janela única · viewer de logs
+    ├── css/app.css                # Tema escuro
+    └── js/app.js                  # Renderer: semáforo, auto-conexão, abas
 ```
 
 ---

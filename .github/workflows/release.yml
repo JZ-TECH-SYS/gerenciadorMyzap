@@ -12,6 +12,11 @@ name: Build & Release
 on:
   push:
     branches: ['main']
+    # Documentacao nao publica release: docs/ e *.md editam livre sem
+    # rebuildar instalador para a frota. (Commits mistos ainda disparam.)
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   workflow_dispatch:
 
 permissions:
