@@ -54,6 +54,12 @@ const POST_START_CONFIRM_MS = 60 * 1000;
 // travamento. Matar e recomecar so esfria o cache e vira loop de morte — a
 // causa raiz do "reparo nao conseguiu subir" em maquina lenta (01/09/2026).
 const WARMUP_GRACE_MS = 8 * 60 * 1000;
+// Motor com listen-early (pack >= 3.0.17) abre a porta em ~1s e o /health
+// responde {starting:true} enquanto o nucleo (wwebjs/puppeteer) carrega.
+// "starting" e progresso real e merece espera — mas com TETO: nucleo que
+// nunca termina (zumbi) precisa de recuperacao, nao de paciencia infinita.
+const STARTING_MAX_MS = 10 * 60 * 1000;
+let startingSince = null;
 
 /** Child vivo e jovem com porta fechada = aquecendo; nao e caso de recuperar. */
 function isChildWarmingUp() {
@@ -120,6 +126,9 @@ async function checkHealth() {
 
             if (res.ok) {
                 const body = await res.json().catch(() => ({}));
+                if (body && (body.starting === true || body.status === 'starting')) {
+                    return { state: 'starting', via: baseUrl };
+                }
                 if (body && body.db === 'down') {
                     warn('Supervisor: MyZap respondendo mas banco local indisponivel', {
                         metadata: { area: 'supervisor', dbError: body.db_error || null }
@@ -150,7 +159,12 @@ async function confirmHealthy(timeoutMs = POST_START_CONFIRM_MS) {
     for (;;) {
         const health = await checkHealth();
         if (health.state === 'healthy') return true;
-        if (Date.now() - inicio >= timeoutMs) return false;
+        // 'starting' = porta aberta, nucleo carregando (listen-early): e
+        // progresso real — ganha o teto longo, nao o timeout curto de morto.
+        // Sem isso, um degrau declarava falha aos 60s e a escada MATAVA um
+        // boot legitimo em maquina lenta (a mesma classe do caso 01/09).
+        const teto = health.state === 'starting' ? STARTING_MAX_MS : timeoutMs;
+        if (Date.now() - inicio >= teto) return false;
         await wait(3000);
     }
 }
@@ -362,6 +376,17 @@ async function forceRepair() {
     }
 
     const health = await checkHealth();
+
+    // "starting" dentro do teto = nucleo carregando de verdade; reparar agora
+    // mataria um boot legitimo (degrau 1 comeca matando o processo).
+    if (health.state === 'starting' && (!startingSince || Date.now() - startingSince < STARTING_MAX_MS)) {
+        return {
+            status: 'busy',
+            message: 'O MyZap ja abriu e esta carregando os modulos internos. '
+                + 'Isso leva alguns minutos na primeira vez apos uma atualizacao. Aguarde.'
+        };
+    }
+
     const result = await recover(health, { manual: true });
 
     if (result?.status === 'busy') {
@@ -409,6 +434,7 @@ async function tick() {
         lastHealth = { ...health, at: Date.now() };
 
         if (health.state === 'healthy') {
+            startingSince = null;
             if (failCount > 0) {
                 info('Supervisor: MyZap saudavel novamente', { metadata: { area: 'supervisor' } });
             }
@@ -429,6 +455,24 @@ async function tick() {
                 });
             }
             return;
+        }
+
+        // Listen-early: porta aberta e nucleo carregando. Normal por alguns
+        // minutos; zumbi alem do teto segue para o fluxo de recuperacao.
+        if (health.state === 'starting') {
+            if (!startingSince) startingSince = Date.now();
+            if (Date.now() - startingSince < STARTING_MAX_MS) {
+                info('Supervisor: MyZap iniciando (nucleo carregando); aguardando sem intervir', {
+                    metadata: { area: 'supervisor', haMs: Date.now() - startingSince }
+                });
+                failCount = 0;
+                return;
+            }
+            warn('Supervisor: MyZap preso em "starting" alem do teto; tratando como doente', {
+                metadata: { area: 'supervisor', haMs: Date.now() - startingSince }
+            });
+        } else {
+            startingSince = null;
         }
 
         // Child vivo e recem-spawnado com porta fechada: primeiro boot lento
