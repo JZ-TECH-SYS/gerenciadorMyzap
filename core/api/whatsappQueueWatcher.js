@@ -57,6 +57,58 @@ let backoffAteEm = 0;
 // Ultimo motivo de ociosidade ja logado (evita repetir o mesmo log a cada 3s).
 let ultimoMotivoOcioso = '';
 
+// ── Autenticacao da fila: fallback auto-descoberto (gerenciador v2.3.9 / jv-printer v4.0.6) ──
+// Backends validam o Bearer da fila contra tokens DIFERENTES:
+//   - ClickExpress/DisparaZap: token de fila dedicado (backendApiToken vindo do
+//     config remoto) — nada muda para eles.
+//   - CobraFacil: valida contra o token da SESSAO (o mesmo sessionName enviado
+//     como sessionToken na query); o token de sistema da API da 401 na fila,
+//     embora seja o token certo para o /config. Como o config remoto do
+//     CobraFacil nao fornece backendApiToken, a derivacao caia no token de
+//     sistema e a fila morria com 401 (producao, 01/09/2026, idempresa 2).
+// Estrategia: tenta o token derivado; num 401, tenta 1x o sessionName e
+// memoriza qual funcionou para os proximos ciclos. O POST /fila/status usa a
+// mesma mecanica — sem o fallback la, a mensagem sairia mas nunca seria
+// confirmada, e o backend reenviaria (cobranca DUPLICADA).
+// A preferencia e POR ROTA: no CobraFacil o /pendentes valida a chave da
+// sessao e o /fila/status valida o token de sistema — uma preferencia unica
+// faria cada rota desfazer a memorizacao da outra a cada ciclo.
+const bearerFilaPreferencia = { pendentes: null, status: null }; // null | 'derivado' | 'sessao'
+let bearerFilaSessionName = '';   // sessionName vigente (p/ o fallback do /fila/status)
+
+// Ordem de tentativa do Bearer da fila. Sem preferencia memorizada: derivado
+// primeiro (comportamento historico). Com preferencia 'sessao': sessao primeiro.
+function bearerCandidatosFila(rota, token, sessionName) {
+  const derivado = String(token || '').trim();
+  const sessao = String(sessionName || '').trim();
+  const lista = [];
+  if (bearerFilaPreferencia[rota] === 'sessao' && sessao) {
+    lista.push({ tipo: 'sessao', valor: sessao });
+  }
+  if (derivado && !lista.some((c) => c.valor === derivado)) {
+    lista.push({ tipo: 'derivado', valor: derivado });
+  }
+  if (sessao && !lista.some((c) => c.valor === sessao)) {
+    lista.push({ tipo: 'sessao', valor: sessao });
+  }
+  return lista.length ? lista : [{ tipo: 'derivado', valor: derivado }];
+}
+
+function registrarBearerFila(rota, tipo, sessionName) {
+  const sessao = String(sessionName || '').trim();
+  if (sessao) {
+    bearerFilaSessionName = sessao;
+  }
+  if (bearerFilaPreferencia[rota] !== tipo) {
+    bearerFilaPreferencia[rota] = tipo;
+    if (tipo === 'sessao') {
+      info(`[FilaMyZap] Backend valida a rota ${rota} com o token da SESSAO; usando sessionName como Bearer`, {
+        metadata: { categoria: 'fila', rota }
+      });
+    }
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -448,9 +500,6 @@ async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idemp
 
   const query = params.toString();
 
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-
   // Log no canal 'backend' (chamada ao DisparaZap, nao ao MyZap local).
   backendLog.debug('[Backend] Buscando pendentes', {
     metadata: {
@@ -462,19 +511,40 @@ async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idemp
       query
     }
   });
-  const res = await fetch(`${apiBaseUrl}parametrizacao-myzap/pendentes?${query}`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${token}` },
-    signal: ctrl.signal
-  });
 
-  clearTimeout(timeout);
+  // Tenta os candidatos de Bearer em ordem; num 401 passa ao proximo (ver
+  // bearerCandidatosFila). Qualquer outro status encerra a rodada de tentativas.
+  const candidatos = bearerCandidatosFila('pendentes', token, sessionName);
+  let res = null;
+  let usado = candidatos[0];
+  for (let i = 0; i < candidatos.length; i += 1) {
+    usado = candidatos[i];
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    try {
+      res = await fetch(`${apiBaseUrl}parametrizacao-myzap/pendentes?${query}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${usado.valor}` },
+        signal: ctrl.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (res.status !== 401 || i === candidatos.length - 1) break;
+    backendLog.warn('[Backend] 401 no /pendentes com o token ' + usado.tipo + '; tentando o token ' + candidatos[i + 1].tipo, {
+      metadata: { categoria: 'fila', apiBaseUrl }
+    });
+  }
+  if (res.ok) {
+    registrarBearerFila('pendentes', usado.tipo, sessionName);
+  }
 
   const data = await res.json().catch(() => ({}));
   backendLog.debug('[Backend] Retorno /parametrizacao-myzap/pendentes', {
     metadata: {
       categoria: 'fila',
       status: res.status,
+      tokenUsado: usado.tipo,
       total: data?.result?.total,
       error: data?.error
     }
@@ -493,9 +563,6 @@ async function buscarPendentes(apiBaseUrl, token, sessionKey, sessionName, idemp
  *   RETROCOMPATIVEL: backends antigos ignoram os campos extras.
  */
 async function atualizarStatusFila(apiBaseUrl, token, payload, detalheErro = null) {
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-
   // Monta o body final. Campos base inalterados; extras apenas em erro.
   let body = { ...payload };
   if (String(payload?.status || '').toLowerCase() === 'erro' && detalheErro) {
@@ -515,21 +582,41 @@ async function atualizarStatusFila(apiBaseUrl, token, payload, detalheErro = nul
   backendLog.debug('[Backend] Atualizando status da fila', {
     metadata: { categoria: 'fila', ...body }
   });
-  const res = await fetch(`${apiBaseUrl}parametrizacao-myzap/fila/status`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`
-    },
-    body: JSON.stringify(body),
-    signal: ctrl.signal
-  });
 
-  clearTimeout(timeout);
+  // Mesma autenticacao do /pendentes: fallback de Bearer num 401 (o sessionName
+  // vigente vem do modulo, alimentado pelo ultimo buscarPendentes com sucesso).
+  const candidatos = bearerCandidatosFila('status', token, bearerFilaSessionName);
+  let res = null;
+  let usado = candidatos[0];
+  for (let i = 0; i < candidatos.length; i += 1) {
+    usado = candidatos[i];
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    try {
+      res = await fetch(`${apiBaseUrl}parametrizacao-myzap/fila/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${usado.valor}`
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (res.status !== 401 || i === candidatos.length - 1) break;
+    backendLog.warn('[Backend] 401 no /fila/status com o token ' + usado.tipo + '; tentando o token ' + candidatos[i + 1].tipo, {
+      metadata: { categoria: 'fila', idfila: body?.idfila }
+    });
+  }
+  if (res.ok) {
+    registrarBearerFila('status', usado.tipo, bearerFilaSessionName);
+  }
 
   const data = await res.json().catch(() => ({}));
   backendLog.debug('[Backend] Retorno /parametrizacao-myzap/fila/status', {
-    metadata: { categoria: 'fila', status: res.status, data }
+    metadata: { categoria: 'fila', status: res.status, tokenUsado: usado.tipo, data }
   });
   return res.ok && !data?.error;
 }
