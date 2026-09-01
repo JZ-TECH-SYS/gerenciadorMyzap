@@ -157,6 +157,14 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
   const archivePath = path.join(tempDir, 'myzap-main.zip');
 
   try {
+    if (options.cleanDestination) {
+      // Reinstalacao: o chamador ja resgatou o que importava e o destino e
+      // descartavel. Sobra de rodada anterior (ensure grava .env/banco no
+      // stub) nao pode travar o reparo no guard de pasta nao-vazia (v2.3.8).
+      try {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      } catch (_cleanupError) { /* validarDestinoInstalacao decide abaixo */ }
+    }
     validarDestinoInstalacao(dirPath);
     fs.mkdirSync(path.dirname(dirPath), { recursive: true });
 

@@ -951,7 +951,14 @@ async function ensureMyZapReadyAndStart(options = {}) {
         };
 
         let startResult;
-        if (checkDir.status === 'success') {
+        // Diretorio "encontrado" mas INCOMPLETO (stub so com .env/banco gravado
+        // por rodadas anteriores, sem codigo/runtime) e tratado como ausente:
+        // aplicar config em cima e tentar start devolvia "instalacao
+        // incompleta" para sempre, sem nunca instalar (v2.3.8).
+        // eslint-disable-next-line global-require
+        const { isMyZapInstallComplete } = require('./iniciarMyZap');
+        const instalacaoUtilizavel = checkDir.status === 'success' && isMyZapInstallComplete(dirPath);
+        if (instalacaoUtilizavel) {
             stepProgress('Instalacao encontrada. Aplicando configuracoes locais...', 'update_existing_install', {
                 dirPath
             });
@@ -959,7 +966,10 @@ async function ensureMyZapReadyAndStart(options = {}) {
                 onProgress: reportProgress
             });
         } else {
-            stepProgress('Instalacao local nao encontrada. Iniciando instalacao (clone/dependencias)...', 'install_local', {
+            const motivoInstalacao = checkDir.status === 'success'
+                ? 'Instalacao local incompleta. Reinstalando o MyZap...'
+                : 'Instalacao local nao encontrada. Iniciando instalacao (clone/dependencias)...';
+            stepProgress(motivoInstalacao, 'install_local', {
                 dirPath
             });
             startResult = await clonarRepositorio(dirPath, envContent, false, {

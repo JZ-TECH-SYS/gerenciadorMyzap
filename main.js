@@ -443,6 +443,13 @@ async function repararMyZapAgora() {
   toast('Reparando o MyZap... isso pode levar alguns minutos.');
   myzapInfo('Reparo manual do MyZap solicitado pelo usuario');
 
+  // Reparo manual = usuario QUER o MyZap de volta: a marca de "removido pelo
+  // usuario" nao pode continuar vetando auto-start/auto-heal depois disso.
+  if (store.get('myzap_userRemovedLocal') === true) {
+    store.delete('myzap_userRemovedLocal');
+    myzapInfo('Flag myzap_userRemovedLocal limpa pelo reparo manual');
+  }
+
   try {
     const result = await forceRepair();
     toast(result?.message || 'Reparo finalizado.');
@@ -477,6 +484,13 @@ async function updateMyZapNow() {
   myzapManualUpdateInProgress = true;
   toast('Atualizando MyZap manualmente...');
   myzapInfo('Atualizacao manual do MyZap solicitada via tray');
+
+  // Mesmo racional do reparo manual: pedido explicito de atualizar = quer o
+  // MyZap rodando; a flag de remocao nao pode seguir travando o auto-start.
+  if (store.get('myzap_userRemovedLocal') === true) {
+    store.delete('myzap_userRemovedLocal');
+    myzapInfo('Flag myzap_userRemovedLocal limpa pela atualizacao manual');
+  }
 
   try {
     // 1) config remota + ambiente de pe

@@ -314,6 +314,37 @@ async function reinstallPreservingData(options = {}) {
         filaEstavaAtiva = pararFilaSeAtiva();
         await stopMyZapAndFreePort({ timeoutMs: 15000 });
 
+        // Runtime Pack PRIMEIRO (v2.3.8). O reparo caia direto no fluxo legado
+        // (zip por SHA fixo do codeload), que morre quando o commit pinado nao
+        // baixa ou o destino tem sobra de config — e a maquina ficava sem motor
+        // para sempre. O pack preserva dados por construcao (moram em
+        // myzap-data) e o applyPackZip migra sessao/banco do layout legado.
+        try {
+            // eslint-disable-next-line global-require
+            const enginePack = require('./enginePack');
+            const viaPack = await enginePack.installFromBestSourceUnlocked({
+                onProgress: reportProgress
+            });
+            if (viaPack && viaPack.status === 'success') {
+                info('reinstallPreservingData: motor reinstalado via Runtime Pack', {
+                    metadata: { area: 'updateMyZap', dir, version: viaPack.version || null }
+                });
+                return {
+                    status: 'success',
+                    message: `MyZap reinstalado do Runtime Pack (v${viaPack.version || '?'}).`
+                };
+            }
+            if (viaPack) {
+                warn('reinstallPreservingData: pack disponivel mas nao subiu; tentando fluxo legado', {
+                    metadata: { area: 'updateMyZap', viaPack }
+                });
+            }
+        } catch (packErr) {
+            warn('reinstallPreservingData: erro no Runtime Pack; tentando fluxo legado', {
+                metadata: { area: 'updateMyZap', error: getErrorMessage(packErr) }
+            });
+        }
+
         // 1) resgatar dados (sobras de tentativas anteriores tambem contam:
         // se ja existe um rescue de uma rodada que morreu no meio, PRESERVA)
         if (!fs.existsSync(rescue)) {

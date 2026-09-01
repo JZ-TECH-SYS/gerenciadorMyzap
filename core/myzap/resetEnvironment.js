@@ -122,7 +122,11 @@ async function doResetMyZapEnvironment(options = {}) {
         getPacksCacheDirFor(dir),
         `${dir}.old`,
         `${dir}.staging`,
-        `${dir}.broken`
+        `${dir}.broken`,
+        // Sobras dos fluxos de reparo/update legados: sem limpar, um resgate
+        // antigo pode reintroduzir dados podres numa reinstalacao futura.
+        `${dir}.rescue-data`,
+        `${dir}.code-backup`
     ]));
 
     // Transitar para estado 'resetting'

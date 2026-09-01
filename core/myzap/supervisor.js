@@ -208,31 +208,29 @@ async function executeStep(step, dir) {
     // degrau 3: reinstalacao preservando dados (sessao/banco/.env)
     info('Supervisor: degrau 3 — reinstalacao preservando dados', { metadata: { area: 'supervisor', dir } });
     try {
-        // Instalacao em modo PACK (v3): os dados ja moram FORA do motor, entao
-        // "reinstalar preservando" e simplesmente reaplicar o pack do cache
-        // local (offline, atomica, com rollback). Sem pack em cache, cai no
-        // fluxo legado abaixo.
+        // Reparo via pack SEMPRE primeiro, independente do layout atual do
+        // diretorio (v2.3.8): cache local + pack embutido do Setup FULL curam
+        // offline ate uma instalacao legada/quebrada/ausente — o applyPackZip
+        // migra os dados. O gate antigo por isPackEngine deixava maquina sem
+        // motor presa no fluxo legado (codeload por SHA fixo), que morre facil.
         // eslint-disable-next-line global-require
-        const { isPackEngine } = require('./enginePaths');
-        if (isPackEngine(dir)) {
-            // eslint-disable-next-line global-require
-            const { repairEngineFromLocalSources } = require('./enginePack');
-            const packResult = await repairEngineFromLocalSources();
-            if (packResult) {
-                if (packResult.status !== 'success') {
-                    warn('Supervisor: reparo via pack falhou', {
-                        metadata: { area: 'supervisor', packResult }
-                    });
-                    return false;
-                }
-                return confirmHealthy();
-            }
-            warn('Supervisor: instalacao em modo pack sem pack em cache; tentando fluxo legado', {
+        const { repairEngineFromLocalSources } = require('./enginePack');
+        const packResult = await repairEngineFromLocalSources();
+        if (packResult && packResult.status === 'success') {
+            return confirmHealthy();
+        }
+        if (packResult) {
+            warn('Supervisor: reparo via pack local falhou; tentando reinstalacao completa', {
+                metadata: { area: 'supervisor', packResult }
+            });
+        } else {
+            info('Supervisor: sem pack em cache/embutido; reinstalacao completa', {
                 metadata: { area: 'supervisor', dir }
             });
         }
 
         // require tardio para evitar custo no boot; updateMyZap reusa o fluxo de F3
+        // (reinstallPreservingData tenta o canal de packs pela rede antes do legado)
         // eslint-disable-next-line global-require
         const { reinstallPreservingData } = require('./updateMyZap');
         const result = await reinstallPreservingData();

@@ -181,7 +181,7 @@ async function tentarInstalarViaSnapshot(dirPath, snapshot, reportProgress, opts
  * `pnpm install` com o runtime interno.
  * @returns {Promise<{ ok: boolean, sha: string|null, result?: object }>}
  */
-async function instalarViaRede(dirPath, shaAlvo, reportProgress) {
+async function instalarViaRede(dirPath, shaAlvo, reportProgress, cleanDestination = false) {
   const pnpmRunner = await getPnpmCommand();
   if (!pnpmRunner) {
     return {
@@ -213,6 +213,7 @@ async function instalarViaRede(dirPath, shaAlvo, reportProgress) {
     await downloadRepositoryArchive(dirPath, {
       onProgress: reportProgress,
       sha: shaParaInstalar,
+      cleanDestination,
     });
   } catch (archiveErr) {
     logError('Falha ao baixar o pacote do MyZap para instalacao local', {
@@ -415,7 +416,9 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     }
 
     if (!instalou) {
-      const viaRede = await instalarViaRede(dirPath, shaAlvo, reportProgress);
+      // Na reinstalacao o destino e descartavel (dados ja resgatados): o
+      // download pode limpar sobras em vez de abortar por pasta nao-vazia.
+      const viaRede = await instalarViaRede(dirPath, shaAlvo, reportProgress, reinstall);
       if (viaRede.ok) {
         instalou = true;
         shaInstalado = viaRede.sha;
