@@ -46,7 +46,10 @@ const PACK_BASENAME = `myzap-pack-${PLATFORM_TAG}`;
 const CHANNEL_LATEST_MANIFEST_URL = `https://github.com/JZ-TECH-SYS/myzap/releases/latest/download/${PACK_BASENAME}.manifest.json`;
 const channelZipUrlFor = (version) => `https://github.com/JZ-TECH-SYS/myzap/releases/download/v${version}/${PACK_BASENAME}.zip`;
 const FETCH_TIMEOUT_MS = 15000;
-const HEALTH_CONFIRM_MS = 90 * 1000;
+// 150s (nao 90): mesmo com o pre-aquecimento do staging, o primeiro boot de um
+// pack novo em maquina lenta merece folga — o processo vivo aguenta a espera,
+// e um health apertado demais transformava boot lento em rollback a toa.
+const HEALTH_CONFIRM_MS = 150 * 1000;
 
 function getErrorMessage(err) {
     return err && err.message ? err.message : String(err);
@@ -412,6 +415,44 @@ function extractPackZip(zipPath, destDir) {
     });
 }
 
+/**
+ * Le TODOS os arquivos de um diretorio (recursivo) para forcar o antivirus a
+ * escanea-los AGORA e aquecer o cache do SO — com o servico antigo ainda no ar.
+ * Sem isso, o custo (30s em SSD, minutos em HDD) caia no primeiro boot da
+ * versao nova, estourando o health check e derrubando cliente em maquina lenta.
+ */
+async function preWarmDir(rootDir, options = {}) {
+    const onTick = typeof options.onTick === 'function' ? options.onTick : () => {};
+    const files = [];
+    const walk = (dir) => {
+        let entries = [];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_e) { return; }
+        for (const ent of entries) {
+            const p = path.join(dir, ent.name);
+            if (ent.isDirectory()) walk(p);
+            else if (ent.isFile()) files.push(p);
+        }
+    };
+    walk(rootDir);
+
+    let lidos = 0;
+    const fila = files.slice();
+    const worker = async () => {
+        for (;;) {
+            const f = fila.shift();
+            if (!f) return;
+            try {
+                // eslint-disable-next-line no-await-in-loop
+                await fs.promises.readFile(f);
+            } catch (_e) { /* melhor esforco — arquivo travado nao para o warmup */ }
+            lidos += 1;
+            if (lidos % 400 === 0) onTick(lidos, files.length);
+        }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return { arquivos: files.length };
+}
+
 async function waitHealthy(timeoutMs) {
     // eslint-disable-next-line global-require
     const { isLocalHttpServiceReachable } = require('./processUtils');
@@ -457,6 +498,17 @@ async function applyPackZip(zipPath, options = {}) {
             || !fs.existsSync(path.join(staging, 'node_modules', 'express'))) {
             throw new Error('Pack extraido esta incompleto (sem index.js/node_modules).');
         }
+
+        // 1b) pre-aquecer o staging COM O SERVICO ANTIGO AINDA NO AR: o
+        // antivirus escaneia os milhares de arquivos novos agora, e nao
+        // durante o primeiro boot da versao nova (que estourava o health
+        // check e derrubava o cliente em maquina lenta — caso 01/09/2026).
+        reportProgress('Verificando arquivos da nova versao (antivirus)...', 'pack_prewarm', { percent: 52 });
+        const aquecido = await preWarmDir(staging, { onTick: () => opLock.touch() });
+        opLock.touch();
+        info('enginePack: staging pre-aquecido', {
+            metadata: { area: 'enginePack', arquivos: aquecido.arquivos }
+        });
 
         // 2) parar o serviço e liberar a porta
         reportProgress('Parando servico para aplicar a nova versao...', 'pack_stop', { percent: 60 });
@@ -637,26 +689,42 @@ async function repairEngineFromLocalSources(options = {}) {
     const engineDir = getEngineDir(options.engineDir);
     const cacheDir = getPacksCacheDirFor(engineDir);
 
-    let zipPath = null;
+    // Candidatos por data (mais novo primeiro), NAO por ordem alfabetica —
+    // "3.0.9" > "3.0.16" no sort lexico e o reparo pegava pack errado.
+    // Se o mais novo nao subir (ex.: versao com boot problematico), tenta o
+    // anterior do cache: voltar a uma versao que funcionava > ficar morto.
+    const candidatos = [];
     try {
-        const zips = fs.existsSync(cacheDir)
-            ? fs.readdirSync(cacheDir).filter((f) => f.endsWith('.zip')).sort()
-            : [];
-        if (zips.length > 0) {
-            zipPath = path.join(cacheDir, zips[zips.length - 1]);
+        if (fs.existsSync(cacheDir)) {
+            const zips = fs.readdirSync(cacheDir)
+                .filter((f) => f.endsWith('.zip'))
+                .map((f) => path.join(cacheDir, f))
+                .sort((a, b) => {
+                    try { return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs; } catch (_e) { return 0; }
+                });
+            candidatos.push(...zips.slice(0, 2));
         }
     } catch (_e) { /* melhor esforco */ }
 
-    if (!zipPath) {
+    if (candidatos.length === 0) {
         const local = findLocalPack();
-        zipPath = local?.zipPath || null;
+        if (local?.zipPath) candidatos.push(local.zipPath);
     }
-    if (!zipPath) return null;
+    if (candidatos.length === 0) return null;
 
-    info('enginePack: reparo do motor a partir de pack local', {
-        metadata: { area: 'enginePack', zipPath }
-    });
-    return applyPackZip(zipPath, { engineDir });
+    let ultimo = null;
+    for (const zipPath of candidatos) {
+        info('enginePack: reparo do motor a partir de pack local', {
+            metadata: { area: 'enginePack', zipPath }
+        });
+        // eslint-disable-next-line no-await-in-loop
+        ultimo = await applyPackZip(zipPath, { engineDir });
+        if (ultimo?.status === 'success') return ultimo;
+        warn('enginePack: reparo com este pack nao subiu; tentando candidato anterior se houver', {
+            metadata: { area: 'enginePack', zipPath, status: ultimo?.status || null }
+        });
+    }
+    return ultimo;
 }
 
 /** Sobras de trocas interrompidas (.staging/.old/.broken) — limpar no boot. */

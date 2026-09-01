@@ -35,6 +35,10 @@ function getErrorMessage(error) {
 
 /** Referencia ao child process ativo do MyZap (pnpm start) */
 let myzapChildProcess = null;
+/** Quando o child atual foi spawnado — para o supervisor saber que o processo
+ *  esta AQUECENDO (primeiro boot pos-extracao le milhares de arquivos novos
+ *  com antivirus escaneando cada um) e nao mata-lo antes da hora. */
+let myzapChildSpawnedAt = null;
 
 /**
  * Mata a ARVORE do child process rastreado do MyZap, se existir.
@@ -61,7 +65,21 @@ function killMyZapProcess() {
     });
   } finally {
     myzapChildProcess = null;
+    myzapChildSpawnedAt = null;
   }
+}
+
+/**
+ * Estado do child para o supervisor decidir entre "morto" e "aquecendo".
+ * Primeiro boot pos-extracao (pack novo) pode levar minutos em maquina com
+ * HDD/antivirus lento — matar e recomecar so esfria o cache e piora.
+ */
+function getChildBootInfo() {
+  return {
+    alive: Boolean(myzapChildProcess),
+    spawnedAt: myzapChildSpawnedAt,
+    ageMs: myzapChildSpawnedAt ? Date.now() - myzapChildSpawnedAt : null,
+  };
 }
 
 /**
@@ -213,6 +231,7 @@ async function iniciarMyZap(dirPath, options = {}) {
 
     // Rastrear child process para kill posterior
     myzapChildProcess = child;
+    myzapChildSpawnedAt = Date.now();
 
     child.stdout.on('data', (data) => {
       info('MyZap runtime stdout', {
@@ -271,10 +290,14 @@ async function iniciarMyZap(dirPath, options = {}) {
       dirPath,
       porta,
     });
-    // Early-exit: se o processo morrer no meio, nao esperamos os 180s inteiros
-    // pela porta — antes, um crash em 5s virava 3 minutos de tela travada.
+    // Early-exit: se o processo morrer no meio, nao esperamos o timeout inteiro
+    // pela porta — antes, um crash em 5s virava minutos de tela travada.
+    // 420s (nao 180s): o PRIMEIRO boot pos-extracao de pack le milhares de
+    // arquivos novos com o antivirus escaneando cada um — 34s em SSD rapido,
+    // multiplos disso em HDD de cliente. Crash real continua saindo na hora
+    // pelo race com childExited; a espera longa so acontece em processo VIVO.
     const resultadoEspera = await Promise.race([
-      aguardarPorta(porta, 180000, 1500).then((ok) => (ok ? 'porta_aberta' : 'timeout')),
+      aguardarPorta(porta, 420000, 1500).then((ok) => (ok ? 'porta_aberta' : 'timeout')),
       childExited.then(() => 'processo_finalizou'),
     ]);
 
@@ -340,4 +363,5 @@ module.exports = {
   killMyZapProcess,
   stopMyZapAndFreePort,
   isMyZapInstallComplete,
+  getChildBootInfo,
 };

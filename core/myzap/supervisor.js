@@ -26,7 +26,7 @@ const {
     killProcessesOnPort,
     waitForPortFree
 } = require('./processUtils');
-const { iniciarMyZap, stopMyZapAndFreePort, isMyZapInstallComplete } = require('./iniciarMyZap');
+const { iniciarMyZap, stopMyZapAndFreePort, isMyZapInstallComplete, getChildBootInfo } = require('./iniciarMyZap');
 const {
     transition,
     forceTransition,
@@ -49,6 +49,17 @@ const FAILS_TO_RECOVER = 5; // processo MORTO (porta fechada): recupera após ~7
 // Por isso exigimos MUITO mais falhas seguidas antes de reiniciar um processo vivo.
 const DEGRADED_FAILS_TO_RECOVER = 16; // ~4 min de lentidao continua antes de agir
 const POST_START_CONFIRM_MS = 60 * 1000;
+// Janela de AQUECIMENTO: child vivo ha menos que isso com a porta ainda fechada
+// = primeiro boot pos-extracao (antivirus escaneando arquivos novos), NAO um
+// travamento. Matar e recomecar so esfria o cache e vira loop de morte — a
+// causa raiz do "reparo nao conseguiu subir" em maquina lenta (01/09/2026).
+const WARMUP_GRACE_MS = 8 * 60 * 1000;
+
+/** Child vivo e jovem com porta fechada = aquecendo; nao e caso de recuperar. */
+function isChildWarmingUp() {
+    const boot = getChildBootInfo();
+    return Boolean(boot.alive && boot.ageMs !== null && boot.ageMs < WARMUP_GRACE_MS);
+}
 const HEALTHY_STREAK_TO_RESET_STEP = 10;
 const BREAKER_MAX_RECOVERIES = 3;
 const BREAKER_WINDOW_MS = 30 * 60 * 1000;
@@ -339,6 +350,17 @@ async function forceRepair() {
         metadata: { area: 'supervisor' }
     });
 
+    // Reparo manual durante o aquecimento mataria o boot que ja esta andando
+    // (e o proximo comecaria do zero, com disco/antivirus frios de novo).
+    if (isChildWarmingUp()) {
+        const minutos = Math.max(1, Math.round((getChildBootInfo().ageMs || 0) / 60000));
+        return {
+            status: 'busy',
+            message: `O MyZap ja esta iniciando (ha ${minutos} min). Primeiro boot de uma versao nova `
+                + 'pode demorar alguns minutos (antivirus verificando os arquivos novos). Aguarde.'
+        };
+    }
+
     const health = await checkHealth();
     const result = await recover(health, { manual: true });
 
@@ -406,6 +428,17 @@ async function tick() {
                     porta: PORTA
                 });
             }
+            return;
+        }
+
+        // Child vivo e recem-spawnado com porta fechada: primeiro boot lento
+        // (pack novo + antivirus). Esperar e mais barato que qualquer degrau —
+        // recuperar agora mataria o processo no meio do aquecimento.
+        if (isChildWarmingUp()) {
+            info('Supervisor: MyZap aquecendo (primeiro boot lento); aguardando sem intervir', {
+                metadata: { area: 'supervisor', childAgeMs: getChildBootInfo().ageMs }
+            });
+            failCount = 0;
             return;
         }
 
