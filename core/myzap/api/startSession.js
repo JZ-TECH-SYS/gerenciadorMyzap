@@ -7,13 +7,25 @@ const { getBackendApiConfig } = require('../capabilities');
 const REQUEST_TIMEOUT_MS = 8000;
 
 /**
- * Pega no backend a URL (ja com token) do webhook de ACK, para o MyZap mandar
- * entregue/lido direto ao DisparaZap. Best-effort: qualquer falha -> '' (a sessao
- * sobe sem webhook e o disparo segue normal; so nao havera entregue/lido).
+ * Pega no backend a URL do webhook de ACK, para o MyZap mandar entregue/lido
+ * direto ao backend. Best-effort: qualquer falha -> '' (a sessao sobe sem
+ * webhook e o disparo segue normal; so nao havera entregue/lido).
+ *
+ * ESTA CHAMADA IA SEM CREDENCIAL NENHUMA — e /config e rota PRIVADA.
+ *
+ * O autoConfig busca a MESMA rota com `Authorization: Bearer`, mas aqui so ia
+ * `Accept`. Resultado: 401 em toda tentativa, `wh_message` nunca era gravado na
+ * sessao do motor e a confirmacao de entrega/leitura NUNCA chegava — para
+ * nenhuma loja, nem as que estavam funcionando. Como a funcao e best-effort e
+ * loga em `debug`, a falha era silenciosa: o painel mostrava "Entregues hoje 0"
+ * sem nada explicando por que.
+ *
+ * O token e o mesmo que o resto do app usa para falar com o backend
+ * (getBackendApiConfig), que e o valor do campo "Token de acesso".
  */
 async function obterAckWebhookUrl() {
     try {
-        const { backendApiUrl } = getBackendApiConfig(store);
+        const { backendApiUrl, backendApiToken } = getBackendApiConfig(store);
         const idempresa = String(store.get('idempresa') || '').trim();
         if (!backendApiUrl || !idempresa) {
             return '';
@@ -22,12 +34,21 @@ async function obterAckWebhookUrl() {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
         try {
+            const headers = { Accept: 'application/json' };
+            if (backendApiToken) {
+                headers.Authorization = `Bearer ${backendApiToken}`;
+            }
             const res = await fetch(`${base}parametrizacao-myzap/config/${encodeURIComponent(idempresa)}`, {
                 method: 'GET',
-                headers: { Accept: 'application/json' },
+                headers,
                 signal: ctrl.signal
             });
             if (!res.ok) {
+                // 401/403 aqui e configuracao, nao indisponibilidade: sem log,
+                // "o ACK nao chega" fica indistinguivel de "o motor nao reportou".
+                warn('Backend recusou a busca do ack_webhook_url (seguindo sem webhook)', {
+                    metadata: { area: 'startSession', status: res.status, temToken: !!backendApiToken }
+                });
                 return '';
             }
             const data = await res.json();
